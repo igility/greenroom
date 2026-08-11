@@ -1,0 +1,26 @@
+{
+  "name": "@greenroom/mcp",
+  "version": "0.0.0",
+  "description": "Greenroom MCP server: human review feedback, readable and answerable by agents",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "greenroom-mcp": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "typecheck": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@greenroom/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

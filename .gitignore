@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.tsbuildinfo
+storybook-static/
+.greenroom-data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+*.log
+coverage/
+test-results/
+playwright-report/
+e2e/.artifacts/
