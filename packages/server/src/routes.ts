@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import type { Hono } from 'hono';
 import { setCookie } from 'hono/cookie';
 import { z } from 'zod';
@@ -55,6 +56,9 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
   app.get('/api/builds', requirePrincipal(), (c) => c.json({ builds: store.listBuilds() }));
   app.get('/api/builds/latest', requirePrincipal(), (c) => c.json({ build: store.latestBuild() }));
   app.get('/api/builds/:id', requirePrincipal(), (c) => c.json({ build: store.getBuild(c.req.param('id')) }));
+  app.get('/api/builds/:id/fingerprints', requirePrincipal(), (c) =>
+    c.json({ count: store.fingerprintCount(c.req.param('id')) }),
+  );
 
   app.get('/builds/:id/*', requirePrincipal(), (c) => {
     const rel = c.req.path.replace(`/builds/${c.req.param('id')}/`, '');
@@ -218,7 +222,27 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
   // ── audit ─────────────────────────────────────────────────────────────────
   app.get('/api/audit/export', requirePrincipal('admin'), (c) => c.json(store.auditExport()));
 
-  // ── magic-link redemption + shell placeholder ─────────────────────────────
+  // ── reviewer shell + magic-link redemption ────────────────────────────────
+  const shellFile = (name: string, type: string) => {
+    const file = path.join(config.shellDir, name);
+    if (!fs.existsSync(file)) throw new HttpError(404, 'Shell asset missing.');
+    return { bytes: new Uint8Array(fs.readFileSync(file)), type };
+  };
+
+  app.get('/review/assets/:file', (c) => {
+    const name = c.req.param('file');
+    if (!/^[a-z-]+\.(js|css)$/.test(name)) throw new HttpError(404, 'Not found.');
+    const { bytes, type } = shellFile(name, name.endsWith('.js') ? 'text/javascript' : 'text/css');
+    c.header('content-type', type);
+    return c.body(bytes);
+  });
+
+  app.get('/review/', (c) => {
+    const { bytes } = shellFile('index.html', 'text/html');
+    c.header('content-type', 'text/html');
+    return c.body(bytes);
+  });
+
   app.get('/review/:token', (c) => {
     const { sessionId } = store.redeemMagicLink(c.req.param('token'));
     setCookie(c, SESSION_COOKIE, sessionId, {
@@ -229,18 +253,4 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
     });
     return c.redirect('/review/');
   });
-
-  app.get('/review/', (c) => {
-    const principal = c.get('principal');
-    if (!principal || principal.kind !== 'reviewer') {
-      return c.html('<h1>Greenroom</h1><p>This page needs a review link. Ask for a fresh one.</p>', 401);
-    }
-    // Placeholder — the reviewer shell SPA replaces this in build phase 4.
-    return c.html(
-      `<h1>Greenroom</h1><p>Signed in as ${escapeHtml(principal.name)}. The review shell lands here.</p>`,
-    );
-  });
 }
-
-const escapeHtml = (s: string) =>
-  s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);

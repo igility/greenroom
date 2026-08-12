@@ -7,7 +7,7 @@
   "bin": {
     "greenroom": "./dist/cli.js"
   },
-  "files": ["dist"],
+  "files": ["dist", "shell"],
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",
     "dev": "tsx src/cli.ts serve",

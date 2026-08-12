@@ -393,6 +393,15 @@ export class Store {
       .run(storyId, buildId, hash, nowIso());
   }
 
+  fingerprintCount(buildId: string): number {
+    this.getBuild(buildId);
+    return (
+      this.db.prepare('SELECT COUNT(*) AS n FROM fingerprints WHERE build_id = ?').get(buildId) as {
+        n: number;
+      }
+    ).n;
+  }
+
   /** Stories awaiting re-confirmation in `buildId`, sorted worst-first, each with a
    * fingerprint verdict. The verdict orders the queue — it never changes state. */
   reconfirmQueue(buildId: string): ReconfirmItem[] {

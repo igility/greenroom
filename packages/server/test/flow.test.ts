@@ -43,6 +43,7 @@ const config: Config = {
   publicUrl: 'http://greenroom.test',
   adminKey: ADMIN,
   adminKeyGenerated: false,
+  shellDir: path.join(process.cwd(), 'shell'),
 };
 const store = new Store(openMemoryDb(), dataDir);
 const app = createApp(store, config);
@@ -283,8 +284,14 @@ describe('review cycle end to end', () => {
     expect(await res.text()).toContain('build-a');
   });
 
-  it('keeps reviewer-only pages off-limits without a session', async () => {
-    const res = await app.request('/review/');
+  it('keeps identity endpoints off-limits without a session', async () => {
+    const res = await app.request('/api/me');
     expect(res.status).toBe(401);
+  });
+
+  it('serves the reviewer shell page', async () => {
+    const res = await app.request('/review/');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('Greenroom');
   });
 });
