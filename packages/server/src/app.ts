@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import type { Config } from './config.js';
 import type { Store } from './store.js';
 import { principalMiddleware, type AppEnv } from './auth.js';
@@ -20,6 +21,11 @@ export function createApp(store: Store, config: Config) {
     console.error(err);
     return c.json({ error: 'Internal error.' }, 500);
   });
+
+  // Bearer-token API access from the addon panel in `storybook dev` is
+  // cross-origin; reviewer cookies never ride on /api/* CORS requests because
+  // the shell is served same-origin by this sidecar.
+  app.use('/api/*', cors());
 
   app.use(principalMiddleware(store, config));
 
