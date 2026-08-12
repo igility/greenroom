@@ -42,13 +42,24 @@ async function body<T extends z.ZodType>(c: { req: { text: () => Promise<string>
   return parsed.data;
 }
 
+// Upload guardrails — a single-process sidecar must not be OOM'd or have its
+// disk filled by an oversized or zip-bomb upload. Overridable via env.
+const MAX_UPLOAD_BYTES = Number(process.env.GREENROOM_MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
+
 export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) {
   // ── builds ────────────────────────────────────────────────────────────────
   app.post('/api/builds', requirePrincipal('admin', 'agent'), async (c) => {
     const label = c.req.query('label') ?? new Date().toISOString().slice(0, 16);
     const gitSha = c.req.query('gitSha') ?? undefined;
+    const declared = Number(c.req.header('content-length') ?? 0);
+    if (declared > MAX_UPLOAD_BYTES) {
+      throw new HttpError(413, `Upload exceeds the ${MAX_UPLOAD_BYTES}-byte limit.`);
+    }
     const bytes = new Uint8Array(await c.req.arrayBuffer());
     if (!bytes.byteLength) throw new HttpError(400, 'Empty upload — send a zip of storybook-static.');
+    if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+      throw new HttpError(413, `Upload exceeds the ${MAX_UPLOAD_BYTES}-byte limit.`);
+    }
     const result = store.ingestBuildZip(bytes, { label, gitSha }, principalOf(c));
     return c.json(result, result.created ? 201 : 200);
   });
@@ -240,13 +251,26 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
   app.get('/review/', (c) => {
     const { bytes } = shellFile('index.html', 'text/html');
     c.header('content-type', 'text/html');
+    // script-src 'self' (no 'unsafe-inline') blocks injected inline scripts and
+    // event handlers — the XSS backstop behind our esc()/validation. Inline
+    // style attributes in the shell markup need style-src 'unsafe-inline'.
+    // The story preview iframe is same-origin under /builds/, so frame-src 'self'.
+    c.header(
+      'content-security-policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'",
+    );
     return c.body(bytes);
   });
+
+  // Prod runs behind HTTPS; local dev over http://localhost must still work.
+  const secureCookies = config.publicUrl.startsWith('https://');
 
   app.get('/review/:token', (c) => {
     const { sessionId } = store.redeemMagicLink(c.req.param('token'));
     setCookie(c, SESSION_COOKIE, sessionId, {
       httpOnly: true,
+      secure: secureCookies,
       sameSite: 'Lax',
       path: '/',
       maxAge: 60 * 60 * 24 * 30,

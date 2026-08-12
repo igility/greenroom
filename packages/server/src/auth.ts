@@ -37,7 +37,8 @@ export function principalMiddleware(store: Store, config: Config): MiddlewareHan
       const sessionId = getCookie(c, SESSION_COOKIE);
       if (sessionId) {
         const reviewer = store.sessionReviewer(sessionId);
-        if (reviewer) principal = { kind: 'reviewer', id: reviewer.id, name: reviewer.name };
+        if (reviewer)
+          principal = { kind: 'reviewer', id: reviewer.id, name: reviewer.name, role: reviewer.role };
       }
     }
 

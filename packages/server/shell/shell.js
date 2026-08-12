@@ -61,6 +61,8 @@ const state = {
   confirmBatch: false,
   sweep: null, // { done, total } while scanning
   sentFingerprints: new Set(),
+  canApprove: false, // reviewer role === 'approver' (admins always true)
+  newerBuild: false, // a newer build was uploaded since this session loaded
 };
 
 const app = document.getElementById('app');
@@ -79,12 +81,18 @@ async function api(method, path, body, contentType) {
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(json.error || `${method} ${path} failed`);
+    // Server messages are client-safe and specific; the fallback never leaks a path.
+    const err = new Error(json.error || "The request didn't go through — please try again.");
     err.status = res.status;
+    err.reason = json.reason;
     throw err;
   }
   return json;
 }
+
+/** Only render an image src we trust to be an inline data:image — never an
+ * arbitrary string that could carry an attribute breakout. */
+const safeDataImage = (u) => (typeof u === 'string' && /^data:image\//.test(u) ? u : '');
 
 // ── skeleton (built once) ────────────────────────────────────────────────────
 
@@ -127,13 +135,17 @@ function buildSkeleton() {
 // ── data loading ─────────────────────────────────────────────────────────────
 
 async function loadAll() {
-  const [storiesRes, queueRes] = await Promise.all([
+  const [storiesRes, queueRes, latest] = await Promise.all([
     api('GET', '/api/stories'),
     state.build ? api('GET', `/api/reconfirm-queue?buildId=${state.build.id}`).catch(() => null) : null,
+    api('GET', '/api/builds/latest').catch(() => null),
   ]);
   state.stories = storiesRes.stories;
   state.verdicts = {};
   for (const item of queueRes?.items ?? []) state.verdicts[item.story.storyId] = item.verdict;
+  // A build uploaded after this session loaded means the visible iframe and the
+  // verdicts are stale; surface a reload rather than approving against the old one.
+  if (latest?.build && state.build && latest.build.id !== state.build.id) state.newerBuild = true;
 }
 
 async function loadFeedback() {
@@ -166,17 +178,28 @@ async function setStatus(storyId, to) {
   render();
 }
 
+/** Stories eligible for approval in the current version: an approvable state AND
+ * actually present in the version being reviewed (a screen removed in a newer
+ * build keeps its old lastSeenBuildId and can't be signed off against this one). */
+function batchTargets() {
+  return state.stories.filter(
+    (s) => BATCHABLE.includes(s.state) && s.lastSeenBuildId === state.build.id,
+  );
+}
+
 async function batchApprove() {
-  const targets = state.stories.filter((s) => BATCHABLE.includes(s.state));
+  const targets = batchTargets();
   state.confirmBatch = false;
+  let approved = 0;
   for (const s of targets) {
     try {
       await api('POST', `/api/stories/${encodeURIComponent(s.storyId)}/status`, {
         to: 'approved',
         buildId: state.build.id,
       });
+      approved++;
     } catch (e) {
-      state.notice = `Stopped at ${s.storyId}: ${e.message}`;
+      state.notice = `Approved ${approved} screen${approved === 1 ? '' : 's'}, then hit a problem at "${s.title}". The rest were not approved — try again, or let your contact know.`;
       break;
     }
   }
@@ -262,9 +285,11 @@ async function sweep() {
   render();
 }
 
-// Fingerprints arrive from any build iframe (visible story or sweep) — store
-// them keyed to the current build; duplicates are skipped.
+// Messages come only from our own same-origin build iframes (served under
+// /builds/). Reject anything from another origin so a cross-origin frame can't
+// inject a pin payload, and validate the captured shape before trusting it.
 window.addEventListener('message', (e) => {
+  if (e.origin !== window.location.origin) return;
   const data = e.data;
   if (!data || !state.build) return;
   if (data.type === 'greenroom:fingerprint' && data.storyId && data.hash) {
@@ -276,8 +301,20 @@ window.addEventListener('message', (e) => {
       buildId: state.build.id,
       hash: data.hash,
     }).catch(() => state.sentFingerprints.delete(key));
-  } else if (data.type === 'greenroom:pin-captured' && data.captured) {
-    state.pendingPin = data.captured;
+  } else if (data.type === 'greenroom:pin-captured' && data.captured?.pin?.selector) {
+    const cap = data.captured;
+    state.pendingPin = {
+      storyId: String(cap.storyId ?? state.currentStoryId ?? ''),
+      pin: {
+        selector: String(cap.pin.selector),
+        x: Number(cap.pin.x) || 0,
+        y: Number(cap.pin.y) || 0,
+        viewportWidth: Number(cap.pin.viewportWidth) || 0,
+        viewportHeight: Number(cap.pin.viewportHeight) || 0,
+      },
+      args: cap.args && typeof cap.args === 'object' ? cap.args : {},
+      screenshotDataUrl: safeDataImage(cap.screenshotDataUrl) || null,
+    };
     render();
   }
 });
@@ -293,13 +330,14 @@ function render() {
   }
 
   const current = state.stories.find((s) => s.storyId === state.currentStoryId) ?? null;
-  const batchable = state.stories.filter((s) => BATCHABLE.includes(s.state));
+  const batchable = batchTargets();
 
   regions.who.innerHTML = `Reviewing <strong>${esc(build.label)}</strong> · signed in as ${esc(me.name)}`;
 
   regions.headerActions.innerHTML = `
+    ${state.newerBuild ? `<button class="action" id="reload-btn" title="A newer version was uploaded">↻ Newer version available — reload</button>` : ''}
     ${state.sweep ? `<span class="sweep-status">Scanning for changes… ${state.sweep.done}/${state.sweep.total}</span>` : `<button class="action" id="sweep-btn">Scan for changes</button>`}
-    ${batchable.length ? `<button class="action approve" id="batch-btn">Approve all remaining (${batchable.length})</button>` : ''}`;
+    ${state.canApprove && batchable.length ? `<button class="action approve" id="batch-btn">Approve all remaining (${batchable.length})</button>` : ''}`;
 
   regions.confirm.innerHTML = state.confirmBatch
     ? confirmStripHtml(batchable.length, build.label)
@@ -324,9 +362,9 @@ function render() {
 function confirmStripHtml(count, label) {
   return `
     <div class="confirm-strip">
-      You're about to approve <strong>${count}</strong> screen${count === 1 ? '' : 's'} against build
-      "<strong>${esc(label)}</strong>" — every remaining screen except those with changes requested.
-      Each approval is recorded in the audit trail under your name.
+      You're about to approve <strong>${count}</strong> screen${count === 1 ? '' : 's'} in version
+      "<strong>${esc(label)}</strong>" — every screen not marked "changes requested," including any
+      you haven't opened yet. Each approval is recorded in the audit trail under your name.
       <div class="buttons">
         <button class="action approve" id="batch-confirm">Approve ${count} screen${count === 1 ? '' : 's'}</button>
         <button class="action" id="batch-cancel">Cancel</button>
@@ -347,9 +385,11 @@ function navHtml() {
     const rows = group
       .map((s) => {
         const verdict = key === 'needs_reconfirm' ? state.verdicts[s.storyId] : null;
+        const absent = s.lastSeenBuildId !== state.build.id;
         return `
           <button class="story ${s.storyId === state.currentStoryId ? 'current' : ''}" data-story="${esc(s.storyId)}">
             <span class="name">${esc(s.title)}</span>
+            ${absent ? '<span class="verdict unknown">not in this version</span>' : ''}
             ${verdict ? `<span class="verdict ${verdict}">${verdict === 'likely_unchanged' ? 'likely unchanged' : verdict}</span>` : ''}
             ${s.openThreads ? `<span class="bubble">💬 ${s.openThreads}</span>` : ''}
           </button>`;
@@ -360,18 +400,23 @@ function navHtml() {
 }
 
 function railHtml(story) {
+  // A comment-only reviewer never sees approve; a screen missing from this
+  // version can't be signed off against it.
+  const absent = story.lastSeenBuildId !== state.build.id;
   const actions = (ACTIONS[story.state] || [])
+    .filter((a) => (a.to === 'approved' ? state.canApprove && !absent : true))
     .map(
       (a) =>
         `<button class="action ${a.kind === 'approve' ? 'approve' : ''}" data-status="${a.to}">${a.label}</button>`,
     )
     .join('');
 
+  const shot = state.pendingPin ? safeDataImage(state.pendingPin.screenshotDataUrl) : '';
   const composer = state.pendingPin
     ? `
       <div class="composer">
-        <p style="margin:0 0 6px"><strong>New comment on</strong> <code>${esc(state.pendingPin.pin.selector)}</code></p>
-        ${state.pendingPin.screenshotDataUrl ? `<img src="${state.pendingPin.screenshotDataUrl}" alt="Captured screen state" />` : ''}
+        <p style="margin:0 0 6px"><strong>New comment on the spot you clicked</strong></p>
+        ${shot ? `<img src="${shot}" alt="Captured screen state" />` : ''}
         <textarea id="composer-text" rows="3" placeholder="What should change?"></textarea>
         <div class="buttons">
           <button class="action primary" id="composer-post">Post comment</button>
@@ -386,6 +431,7 @@ function railHtml(story) {
 
   return `
     <div><span class="chip ${story.state}">${STATE_LABEL[story.state]}</span></div>
+    ${absent ? '<p class="hint">This screen isn\'t part of the version you\'re reviewing.</p>' : ''}
     <div class="rail-actions">
       ${actions}
       <button class="action" id="pin-btn">📌 Add comment</button>
@@ -406,10 +452,10 @@ function threadHtml(item) {
   return `
     <div class="thread" data-thread="${t.id}">
       <div class="meta">
-        <span>${t.pin ? `<code>${esc(t.pin.selector)}</code>` : 'General'}</span>
-        <span>${t.state}</span>
+        <span>${t.pin ? 'Pinned comment' : 'General'}</span>
+        <span>${esc(t.state)}</span>
       </div>
-      ${t.screenshotAttachmentId ? `<img src="/api/attachments/${t.screenshotAttachmentId}" alt="Comment screenshot" loading="lazy" />` : ''}
+      ${t.screenshotAttachmentId ? `<img src="/api/attachments/${encodeURIComponent(t.screenshotAttachmentId)}" alt="Comment screenshot" loading="lazy" />` : ''}
       ${messages}
       <div class="reply-row">
         <input type="text" placeholder="Reply…" data-reply-input />
@@ -430,6 +476,8 @@ function wireEvents(current) {
     state.confirmBatch = false;
     render();
   });
+
+  document.getElementById('reload-btn')?.addEventListener('click', () => location.reload());
 
   regions.nav.querySelectorAll('.story').forEach((el) =>
     el.addEventListener('click', () => selectStory(el.dataset.story)),
@@ -470,23 +518,29 @@ async function boot() {
     app.innerHTML = `<div class="gate"><h1>Greenroom</h1><p>This page needs a review link. Ask your contact for a fresh one.</p></div>`;
     return;
   }
-  const latest = await api('GET', '/api/builds/latest');
-  state.build = latest.build;
-  if (!state.build) {
+  // Approval is an approver-only action; admins always qualify.
+  state.canApprove = state.me.kind === 'admin' || state.me.role === 'approver';
+  try {
+    const latest = await api('GET', '/api/builds/latest');
+    state.build = latest.build;
+    if (!state.build) {
+      render();
+      return;
+    }
+    buildSkeleton();
+    await loadAll();
+    const first =
+      state.stories.find((s) => s.state === 'needs_reconfirm') ??
+      state.stories.find((s) => s.state !== 'approved') ??
+      state.stories[0];
+    if (first) {
+      state.currentStoryId = first.storyId;
+      await loadFeedback();
+    }
     render();
-    return;
+  } catch {
+    app.innerHTML = `<div class="gate"><h1>Greenroom</h1><p>We couldn't load the review right now. Reload the page to try again — if it keeps happening, let your contact know.</p></div>`;
   }
-  buildSkeleton();
-  await loadAll();
-  const first =
-    state.stories.find((s) => s.state === 'needs_reconfirm') ??
-    state.stories.find((s) => s.state !== 'approved') ??
-    state.stories[0];
-  if (first) {
-    state.currentStoryId = first.storyId;
-    await loadFeedback();
-  }
-  render();
 }
 
 boot();

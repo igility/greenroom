@@ -5,6 +5,13 @@ import { sha256Hex, HttpError } from './util.js';
 
 export type ZipEntries = Record<string, Uint8Array>;
 
+// Zip-bomb guardrails on the decompressed side: a small archive can expand to
+// gigabytes or millions of entries. Overridable via env.
+const MAX_ENTRIES = Number(process.env.GREENROOM_MAX_BUILD_ENTRIES ?? 50_000);
+const MAX_DECOMPRESSED_BYTES = Number(
+  process.env.GREENROOM_MAX_DECOMPRESSED_BYTES ?? 1024 * 1024 * 1024,
+);
+
 /** Unzip and validate entry paths (reject absolute paths and `..` traversal). */
 export function readZip(bytes: Uint8Array): ZipEntries {
   let raw: Record<string, Uint8Array>;
@@ -14,8 +21,17 @@ export function readZip(bytes: Uint8Array): ZipEntries {
     throw new HttpError(400, 'Not a readable zip archive.');
   }
   const entries: ZipEntries = {};
+  let count = 0;
+  let totalBytes = 0;
   for (const [name, data] of Object.entries(raw)) {
     if (name.endsWith('/')) continue;
+    if (++count > MAX_ENTRIES) {
+      throw new HttpError(413, `Archive has too many files (limit ${MAX_ENTRIES}).`);
+    }
+    totalBytes += data.byteLength;
+    if (totalBytes > MAX_DECOMPRESSED_BYTES) {
+      throw new HttpError(413, `Archive decompresses beyond the ${MAX_DECOMPRESSED_BYTES}-byte limit.`);
+    }
     const normalized = name.split('\\').join('/');
     if (
       path.posix.isAbsolute(normalized) ||

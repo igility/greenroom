@@ -1,9 +1,17 @@
 #!/usr/bin/env node
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SidecarClient } from './client.js';
+import { buildServer } from './server.js';
 
-// Tools (list_feedback, get_thread, reply_to_thread, mark_addressed,
-// list_story_statuses, approve_stories) land in build phase 5.
-const server = new McpServer({ name: 'greenroom', version: '0.0.0' });
+const url = process.env.GREENROOM_URL;
+const token = process.env.GREENROOM_TOKEN;
 
+if (!url || !token) {
+  console.error(
+    'Usage: GREENROOM_URL=<sidecar url> GREENROOM_TOKEN=<agent token> greenroom-mcp',
+  );
+  process.exit(1);
+}
+
+const server = buildServer(new SidecarClient({ url, token }));
 await server.connect(new StdioServerTransport());

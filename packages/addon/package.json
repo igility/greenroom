@@ -7,19 +7,18 @@
   "files": ["dist", "preset.js"],
   "scripts": {
     "build": "tsup",
+    "prepack": "tsup",
     "typecheck": "tsc",
-    "test": "vitest run"
-  },
-  "dependencies": {
-    "@greenroom/shared": "workspace:*",
-    "@medv/finder": "^4.0.2",
-    "modern-screenshot": "^4.7.0"
+    "test": "vitest run --passWithNoTests"
   },
   "peerDependencies": {
     "storybook": "^10.0.0"
   },
   "devDependencies": {
+    "@greenroom/shared": "workspace:*",
+    "@medv/finder": "^4.0.2",
     "@types/react": "^19.2.0",
+    "modern-screenshot": "^4.7.0",
     "react": "^19.2.8",
     "storybook": "^10.5.7",
     "tsup": "^8.5.0",

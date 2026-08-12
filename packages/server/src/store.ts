@@ -184,15 +184,33 @@ export class Store {
   ): Story {
     const story = this.getStory(storyId);
     const policy = this.agentApprovalPolicy();
-    const decision = canTransition(by.kind, story.state, to, policy);
+    const decision = canTransition(by.kind, story.state, to, {
+      policy,
+      reviewerRole: by.role,
+    });
     if (!decision.allowed) {
       throw new HttpError(403, decision.message ?? 'Transition not allowed.', decision.reason);
     }
+
+    // A provided build id must exist — otherwise the anchor FK throws a raw 500
+    // on approve, and non-approve transitions would write a bogus id into the
+    // append-only audit trail with no FK to catch it.
+    if (opts.buildId !== undefined) this.getBuild(opts.buildId);
 
     const buildId = opts.buildId ?? story.lastSeenBuildId;
     let approvalMode: ApprovalMode | null = null;
     let delegationId: string | null = null;
     if (to === 'approved') {
+      // Approval binds to the build the reviewer actually saw. A stale client
+      // approving against a superseded build would forge a green signature for
+      // markup that has since changed — reject and force a reload.
+      if (buildId !== story.lastSeenBuildId) {
+        throw new HttpError(
+          409,
+          'A newer build has been uploaded — reload the review before approving so your sign-off pins to what you are looking at.',
+          'STALE_BUILD',
+        );
+      }
       approvalMode = by.kind === 'agent' ? 'delegated' : 'direct';
       if (approvalMode === 'delegated') delegationId = this.activeDelegation()!.id;
     }
@@ -271,6 +289,9 @@ export class Store {
   ): FeedbackItem {
     this.getStory(input.storyId);
     this.getBuild(input.buildId);
+    // A screenshot reference must point at a real attachment row — never accept
+    // an arbitrary client-supplied string (it is later rendered in an <img src>).
+    if (input.screenshotAttachmentId !== undefined) this.getAttachment(input.screenshotAttachmentId);
     const threadId = id();
     const at = nowIso();
     this.db.transaction(() => {

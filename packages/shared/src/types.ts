@@ -24,6 +24,8 @@ export interface Principal {
   /** Reviewer id for reviewers; token id for agent/admin keys. */
   id: string;
   name: string;
+  /** Role of a reviewer principal; absent for admin/agent. Gates approval. */
+  role?: ReviewerRole;
 }
 
 export interface Build {

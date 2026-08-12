@@ -10,14 +10,19 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsup src/index.ts --format esm --clean",
+    "prepack": "tsup src/index.ts --format esm --clean",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@greenroom/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@greenroom/server": "workspace:*",
+    "@hono/node-server": "^2.1.0",
+    "fflate": "^0.8.2",
     "@types/node": "^22.18.0",
     "tsup": "^8.5.0",
     "typescript": "^5.9.0",

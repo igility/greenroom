@@ -1,4 +1,4 @@
-import type { PrincipalKind, StoryState } from './types.js';
+import type { PrincipalKind, ReviewerRole, StoryState } from './types.js';
 
 /** Server-side policy for agent approvals. Disabled unless an admin has recorded a
  * written human authorization (a Delegation row); then 'delegated'. */
@@ -7,9 +7,20 @@ export type AgentApprovalPolicy = 'disabled' | 'delegated';
 export interface TransitionDecision {
   allowed: boolean;
   /** Machine-readable reason when denied. */
-  reason?: 'AGENT_APPROVAL_DISABLED' | 'AGENT_TRANSITION_FORBIDDEN' | 'INVALID_TRANSITION';
+  reason?:
+    | 'AGENT_APPROVAL_DISABLED'
+    | 'AGENT_TRANSITION_FORBIDDEN'
+    | 'INVALID_TRANSITION'
+    | 'REVIEWER_ROLE_FORBIDDEN';
   /** Human/agent-readable explanation when denied. */
   message?: string;
+}
+
+export interface TransitionContext {
+  policy: AgentApprovalPolicy;
+  /** Role of a reviewer principal; approval is an approver-only action. Ignored
+   * for admin and agent principals. Defaults to 'approver' when omitted. */
+  reviewerRole?: ReviewerRole;
 }
 
 export const AGENT_APPROVAL_WARNING =
@@ -48,21 +59,31 @@ export function canTransition(
   principal: PrincipalKind,
   from: StoryState,
   to: StoryState,
-  policy: AgentApprovalPolicy,
+  ctx: TransitionContext,
 ): TransitionDecision {
   if (principal === 'admin' || principal === 'reviewer') {
-    if (HUMAN_TRANSITIONS[from].includes(to)) return { allowed: true };
-    return {
-      allowed: false,
-      reason: 'INVALID_TRANSITION',
-      message: `Cannot move a story from "${from}" to "${to}".`,
-    };
+    if (!HUMAN_TRANSITIONS[from].includes(to)) {
+      return {
+        allowed: false,
+        reason: 'INVALID_TRANSITION',
+        message: `Cannot move a story from "${from}" to "${to}".`,
+      };
+    }
+    // Approval is an approver-only action; a comment-only reviewer cannot sign off.
+    if (principal === 'reviewer' && to === 'approved' && ctx.reviewerRole === 'reviewer') {
+      return {
+        allowed: false,
+        reason: 'REVIEWER_ROLE_FORBIDDEN',
+        message: 'This reviewer can comment but is not authorized to approve. Ask an approver to sign off.',
+      };
+    }
+    return { allowed: true };
   }
 
   if (AGENT_TRANSITIONS[from].includes(to)) return { allowed: true };
 
   if (AGENT_DELEGATED_TRANSITIONS[from].includes(to)) {
-    if (policy === 'delegated') return { allowed: true };
+    if (ctx.policy === 'delegated') return { allowed: true };
     return {
       allowed: false,
       reason: 'AGENT_APPROVAL_DISABLED',

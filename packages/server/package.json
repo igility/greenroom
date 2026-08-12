@@ -10,9 +10,10 @@
   "files": ["dist", "shell"],
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",
+    "prepack": "tsup src/cli.ts --format esm --clean",
     "dev": "tsx src/cli.ts serve",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@greenroom/shared": "workspace:*",

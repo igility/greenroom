@@ -15,8 +15,9 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
+    "prepack": "tsup src/index.ts --format esm --dts --clean",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
     "tsup": "^8.5.0",
