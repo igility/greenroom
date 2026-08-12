@@ -1,0 +1,6 @@
+**/node_modules
+**/dist
+**/storybook-static
+**/.greenroom-data
+e2e/.artifacts
+**/*.db
