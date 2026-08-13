@@ -22,6 +22,12 @@ ENV NODE_ENV=production \
     GREENROOM_PORT=4788
 COPY --from=build /out ./
 RUN mkdir -p /data
-VOLUME /data
+# No `VOLUME /data`. Railway rejects the instruction outright ("docker VOLUME is not
+# supported, use Railway Volumes") and every build fails at unpack, before anything is
+# compiled — so the whole image is undeployable there for a line that only declares
+# intent. Mount the data directory from outside instead, as the run command above does;
+# on a platform, attach the platform's own volume at /data. Everything Greenroom keeps
+# lives there — SQLite, uploaded builds, attachments — so an unmounted container is a
+# working sidecar that loses every approval when it restarts.
 EXPOSE 4788
 CMD ["node", "dist/cli.js", "serve"]
