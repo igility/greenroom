@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { addons, types, useChannel, useParameter, useStorybookApi } from 'storybook/manager-api';
-import type { Story, StoryState } from '@greenroom/shared';
+import type { Story, StoryState } from '@igility/greenroom-shared';
 import { Sidecar, type Conn, type FeedbackItem } from './api.js';
 import { ADDON_ID, EVENTS, PANEL_ID, PARAM_KEY, type CapturedPin } from './constants.js';
 

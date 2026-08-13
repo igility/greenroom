@@ -15,7 +15,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@greenroom/addon": "workspace:*",
+    "@igility/greenroom-addon": "workspace:*",
     "@storybook/react-vite": "^10.5.7",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

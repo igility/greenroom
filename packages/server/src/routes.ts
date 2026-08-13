@@ -118,6 +118,8 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
       c,
       z.object({
         storyId: z.string(),
+        /** The tile clicked, when the surface declared regions. */
+        regionStoryId: z.string().nullish(),
         buildId: z.string(),
         body: z.string().min(1),
         pin: pinSchema.optional(),
@@ -165,10 +167,22 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
   app.put('/api/fingerprints', requirePrincipal(), async (c) => {
     const input = await body(
       c,
-      z.object({ storyId: z.string(), buildId: z.string(), hash: z.string().min(16) }),
+      z.object({
+        storyId: z.string(),
+        buildId: z.string(),
+        hash: z.string().min(16),
+        /** Per-region hashes observed in the same render. Absent for a story that
+         *  declares no regions, which keeps every pre-existing client working. */
+        regions: z
+          .array(z.object({ regionKey: z.string().min(1), hash: z.string().min(16) }))
+          .optional(),
+      }),
     );
-    store.putFingerprint(input.storyId, input.buildId, input.hash);
-    return c.json({ ok: true });
+    // `unresolved` names regions whose story id is not in this build — a stale tile
+    // id in host markup. Returned rather than thrown: the render sweep must not fail
+    // over it, but it must not pass silently either.
+    const report = store.putRenderReport(input.storyId, input.buildId, input);
+    return c.json({ ok: true, ...report });
   });
 
   // ── attachments ───────────────────────────────────────────────────────────

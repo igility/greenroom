@@ -39,16 +39,52 @@ export interface Build {
   createdAt: string;
 }
 
+/**
+ * `sheet` is a contact sheet — a navigation and batch surface that surveys other
+ * stories. It is deliberately NOT a review unit: it cannot be approved, is excluded
+ * from progress counts and from the agent's work queue, and its status is a rollup
+ * over its members. Declared by the `greenroom:sheet` story tag.
+ */
+export type StoryKind = 'story' | 'sheet';
+
 export interface Story {
   /** Storybook story id, e.g. `components-button--primary`. */
   storyId: string;
   title: string;
   /** CSF file path from the build's index.json — how agents find the source. */
   importPath: string;
+  kind: StoryKind;
   state: StoryState;
   /** Build the current approval is pinned to, when approved. */
   anchorBuildId: string | null;
   lastSeenBuildId: string;
+}
+
+/**
+ * A story surveyed by a contact sheet, as observed when the sheet rendered in a
+ * given build. Recorded per build so that a member disappearing from the codebase
+ * is expressible rather than silently dropping out of the rollup.
+ */
+export interface SheetMember {
+  sheetStoryId: string;
+  memberStoryId: string;
+  buildId: string;
+  /** Render order within the sheet, so the tour and the grid agree. */
+  position: number;
+}
+
+/**
+ * A render fingerprint scoped to one region of a story. `regionKey` is the member
+ * story id for a declared region, or `ROOT_REGION` for the story as a whole.
+ *
+ * Per-region hashes are what let a second review round show only the tiles that
+ * actually moved. A single whole-story hash reports every sheet as changed the
+ * moment any one of its tiles does, which makes the re-confirm queue useless
+ * exactly when it matters most.
+ */
+export interface RegionFingerprint {
+  regionKey: string;
+  hash: string;
 }
 
 /** Where a comment pin landed, captured at comment time. */
@@ -62,7 +98,15 @@ export interface Pin {
 
 export interface Thread {
   id: string;
+  /** What the comment is about — the tile's component when one was clicked. */
   storyId: string;
+  /**
+   * The surface the reviewer was standing on when they said it, when that differs
+   * from `storyId` — a contact sheet, typically. Provenance, not attribution: the
+   * fix happens on `storyId`, but an agent reading the thread needs to know the
+   * comment was made while looking at a grid of thirty things.
+   */
+  seenOnStoryId: string | null;
   buildId: string;
   state: ThreadState;
   pin: Pin | null;

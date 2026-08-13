@@ -1,4 +1,4 @@
-import type { Build, Story, StoryState, ThreadState } from '@greenroom/shared';
+import type { Build, Story, StoryState, ThreadState } from '@igility/greenroom-shared';
 
 export interface FeedbackItem {
   thread: {

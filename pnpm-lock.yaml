@@ -27,7 +27,7 @@ importers:
         specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
     devDependencies:
-      '@greenroom/addon':
+      '@igility/greenroom-addon':
         specifier: workspace:*
         version: link:../../packages/addon
       '@storybook/react-vite':
@@ -51,7 +51,7 @@ importers:
 
   packages/addon:
     devDependencies:
-      '@greenroom/shared':
+      '@igility/greenroom-shared':
         specifier: workspace:*
         version: link:../shared
       '@medv/finder':
@@ -88,15 +88,15 @@ importers:
         specifier: ^3.25.0
         version: 3.25.76
     devDependencies:
-      '@greenroom/server':
-        specifier: workspace:*
-        version: link:../server
-      '@greenroom/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@hono/node-server':
         specifier: ^2.1.0
         version: 2.1.0(hono@4.13.1)
+      '@igility/greenroom-server':
+        specifier: workspace:*
+        version: link:../server
+      '@igility/greenroom-shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/node':
         specifier: ^22.18.0
         version: 22.20.1
@@ -115,12 +115,12 @@ importers:
 
   packages/server:
     dependencies:
-      '@greenroom/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@hono/node-server':
         specifier: ^2.1.0
         version: 2.1.0(hono@4.13.1)
+      '@igility/greenroom-shared':
+        specifier: workspace:*
+        version: link:../shared
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3

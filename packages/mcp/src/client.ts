@@ -6,7 +6,7 @@ import type {
   StoryState,
   Thread,
   ThreadState,
-} from '@greenroom/shared';
+} from '@igility/greenroom-shared';
 
 /** One thread of human review feedback plus the story it hangs on. */
 export interface FeedbackItem {

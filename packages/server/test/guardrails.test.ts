@@ -7,7 +7,7 @@ import { createApp } from '../src/app.js';
 import { openMemoryDb } from '../src/db.js';
 import { Store } from '../src/store.js';
 import type { Config } from '../src/config.js';
-import type { Principal } from '@greenroom/shared';
+import type { Principal } from '@igility/greenroom-shared';
 
 const ADMIN = 'guard-admin';
 const enc = (s: string) => new TextEncoder().encode(s);

@@ -1,6 +1,7 @@
 import { unzipSync, zipSync } from 'fflate';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SHEET_TAG, type StoryKind } from '@igility/greenroom-shared';
 import { sha256Hex, HttpError } from './util.js';
 
 export type ZipEntries = Record<string, Uint8Array>;
@@ -81,15 +82,19 @@ export function zipDir(dir: string): Uint8Array {
 
 interface IndexEntry {
   type?: string;
+  subtype?: string;
   title?: string;
   name?: string;
   importPath?: string;
+  exportName?: string;
+  tags?: string[];
 }
 
 export interface IndexedStory {
   storyId: string;
   title: string;
   importPath: string;
+  kind: StoryKind;
 }
 
 /** Parse Storybook's index.json from an uploaded build. */
@@ -108,10 +113,20 @@ export function parseStoryIndex(entries: ZipEntries): IndexedStory[] {
   const stories: IndexedStory[] = [];
   for (const [storyId, entry] of Object.entries(parsed.entries)) {
     if (entry.type !== 'story') continue;
+    // Storybook 10 emits attached tests as `type:'story'` with `subtype:'test'`.
+    // They are not review units: ingesting them puts test cases in the reviewer's
+    // batch-approve set and in the agent's work queue, and — because a test repeats
+    // its parent story's exportName verbatim — they collide on any identity keyed
+    // by (importPath, exportName). Storybook 9 emits no `subtype` while still
+    // declaring the same index version, so an absent subtype must read as a story.
+    if (entry.subtype && entry.subtype !== 'story') continue;
     stories.push({
       storyId,
       title: [entry.title, entry.name].filter(Boolean).join(' / ') || storyId,
       importPath: entry.importPath ?? '',
+      // Storybook carries story tags into index.json, so a sheet declares itself
+      // in the build rather than needing a manifest we would have to keep in sync.
+      kind: entry.tags?.includes(SHEET_TAG) ? 'sheet' : 'story',
     });
   }
   return stories;

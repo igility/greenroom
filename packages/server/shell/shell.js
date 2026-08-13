@@ -57,6 +57,7 @@ const state = {
   currentStoryId: null,
   feedback: [],
   pendingPin: null,
+  selectedRegion: null, // story id of the tile clicked on a review surface
   notice: '',
   confirmBatch: false,
   sweep: null, // { done, total } while scanning
@@ -159,7 +160,12 @@ async function loadFeedback() {
 async function selectStory(storyId) {
   state.currentStoryId = storyId;
   state.pendingPin = null;
+  state.selectedRegion = null;
   state.notice = '';
+  // Paint the selection before fetching its comments. Waiting on the round-trip
+  // leaves the previous screen highlighted and rendered for as long as the request
+  // takes, so a click reads as having done nothing — and the reviewer clicks again.
+  render();
   await loadFeedback();
   render();
 }
@@ -183,7 +189,14 @@ async function setStatus(storyId, to) {
  * build keeps its old lastSeenBuildId and can't be signed off against this one). */
 function batchTargets() {
   return state.stories.filter(
-    (s) => BATCHABLE.includes(s.state) && s.lastSeenBuildId === state.build.id,
+    (s) =>
+      // A contact sheet surveys other stories and cannot be approved — the server
+      // refuses it by name. Leaving it in the batch would abort the whole sweep
+      // partway through, on a story the reviewer never meant to sign off, with the
+      // page left half-approved and no record of what they intended.
+      s.kind !== 'sheet' &&
+      BATCHABLE.includes(s.state) &&
+      s.lastSeenBuildId === state.build.id,
   );
 }
 
@@ -226,6 +239,10 @@ async function postComment(text) {
     }
     await api('POST', '/api/threads', {
       storyId: pending.storyId,
+      // The tile the reviewer clicked. The server attributes the comment to that
+      // component and records the surface as where it was said; when it is null or
+      // does not resolve, the thread stays on the surface itself.
+      regionStoryId: pending.regionStoryId,
       buildId: state.build.id,
       body: text.trim(),
       pin: pending.pin,
@@ -293,6 +310,12 @@ window.addEventListener('message', (e) => {
   const data = e.data;
   if (!data || !state.build) return;
   if (data.type === 'greenroom:fingerprint' && data.storyId && data.hash) {
+    // The preview has rendered and its listener is live, so decorate now — BEFORE the
+    // dedupe guard below. That guard exists to avoid re-uploading a hash we already
+    // have; the decoration has to happen on every render, because returning to a page
+    // reloads the iframe and the new document starts with no styles at all.
+    pushStatusMap();
+
     const key = `${data.storyId}:${state.build.id}`;
     if (state.sentFingerprints.has(key)) return;
     state.sentFingerprints.add(key);
@@ -300,11 +323,25 @@ window.addEventListener('message', (e) => {
       storyId: data.storyId,
       buildId: state.build.id,
       hash: data.hash,
+      // Per-region hashes ride along with the root hash: they come from one render
+      // sweep, and they are what lets a later round show only the tiles that moved.
+      regions: Array.isArray(data.regions)
+        ? data.regions
+            .filter((r) => r && typeof r.regionKey === 'string' && typeof r.hash === 'string')
+            .map((r) => ({ regionKey: r.regionKey, hash: r.hash }))
+        : undefined,
     }).catch(() => state.sentFingerprints.delete(key));
+  } else if (data.type === 'greenroom:region-selected' && data.regionStoryId) {
+    // Clicking a tile IS the selection. Filtering the rail is the visible proof it
+    // registered — without it a click on a review surface has no observable effect.
+    state.selectedRegion = String(data.regionStoryId);
+    render();
   } else if (data.type === 'greenroom:pin-captured' && data.captured?.pin?.selector) {
     const cap = data.captured;
     state.pendingPin = {
       storyId: String(cap.storyId ?? state.currentStoryId ?? ''),
+      regionStoryId: cap.regionStoryId ? String(cap.regionStoryId) : null,
+      portalCaptured: cap.portalCaptured === true,
       pin: {
         selector: String(cap.pin.selector),
         x: Number(cap.pin.x) || 0,
@@ -373,8 +410,29 @@ function confirmStripHtml(count, label) {
 }
 
 function navHtml() {
-  return GROUPS.map(([key, title]) => {
-    let group = state.stories.filter((s) => s.state === key);
+  // Sheets lead: they are the surfaces a reviewer walks, and each one stands in for
+  // the components it shows. They are listed separately rather than mixed into the
+  // state groups because they are not items to review — counting them alongside
+  // components inflates every number the reviewer is shown, and a reviewer facing a
+  // denominator in the hundreds for what is really a handful of pages stops early.
+  const sheets = state.stories.filter(
+    (s) => s.kind === 'sheet' && s.lastSeenBuildId === state.build.id,
+  );
+  const sheetRows = sheets.length
+    ? `<h2>Pages to review (${sheets.length})</h2>` +
+      sheets
+        .map(
+          (s) => `
+          <button class="story ${s.storyId === state.currentStoryId ? 'current' : ''}" data-story="${esc(s.storyId)}">
+            <span class="name">${esc(s.title)}</span>
+            ${s.openThreads ? `<span class="bubble">💬 ${s.openThreads}</span>` : ''}
+          </button>`,
+        )
+        .join('')
+    : '';
+
+  return sheetRows + GROUPS.map(([key, title]) => {
+    let group = state.stories.filter((s) => s.state === key && s.kind !== 'sheet');
     if (!group.length) return '';
     if (key === 'needs_reconfirm') {
       const rank = { changed: 0, unknown: 1, likely_unchanged: 2 };
@@ -397,6 +455,31 @@ function navHtml() {
       .join('');
     return `<h2>${title} (${group.length})</h2>${rows}`;
   }).join('');
+}
+
+/**
+ * Tell the preview which tiles still want the reviewer.
+ *
+ * Only open comments are painted. On a first pass nothing is approved, so marking
+ * "settled" would put an identical badge on every tile — noise on exactly the pass
+ * where the reviewer is hunting for problems.
+ *
+ * Called from two places, and it needs both. After a render, so a comment posted just
+ * now marks its tile immediately; and again when the preview reports it has rendered,
+ * because selecting a story swaps the iframe's src and the new document starts with no
+ * decoration and no listener. A map pushed while that document is still loading is
+ * delivered to nobody, which is why the outlines vanished on the way back to a page.
+ */
+function pushStatusMap() {
+  if (!regions?.frame?.contentWindow) return;
+  const statuses = {};
+  for (const f of state.feedback) {
+    if (f.thread.state === 'open') statuses[f.thread.storyId] = { flagged: true };
+  }
+  regions.frame.contentWindow.postMessage(
+    { type: 'greenroom:status-map', statuses },
+    window.location.origin,
+  );
 }
 
 function railHtml(story) {
@@ -425,9 +508,28 @@ function railHtml(story) {
       </div>`
     : '';
 
-  const threads = state.feedback.length
-    ? state.feedback.map(threadHtml).join('')
-    : '<p class="hint">No comments on this screen yet.</p>';
+  // On a surface made of many components, the rail shows the one you clicked. A whole
+  // sheet's comments in one column is the same undifferentiated pile the sheet exists
+  // to break up — but nothing is hidden: "Show all" is always one click away.
+  const selected = state.selectedRegion;
+  const shown = selected
+    ? state.feedback.filter((f) => f.thread.storyId === selected)
+    : state.feedback;
+  const selectedTitle = selected
+    ? (state.stories.find((x) => x.storyId === selected) || {}).title || selected
+    : null;
+  const filterBar = selected
+    ? `<div class="filter-bar">
+         <span>Showing <strong>${esc(selectedTitle)}</strong> — ${shown.length} comment${shown.length === 1 ? '' : 's'}</span>
+         <button class="linkish" id="show-all">Show all (${state.feedback.length})</button>
+       </div>`
+    : '';
+
+  const threads = shown.length
+    ? shown.map(threadHtml).join('')
+    : selected
+      ? '<p class="hint">Nothing on this one yet — use Add comment to say something about it.</p>'
+      : '<p class="hint">No comments on this screen yet.</p>';
 
   return `
     <div><span class="chip ${story.state}">${STATE_LABEL[story.state]}</span></div>
@@ -438,11 +540,29 @@ function railHtml(story) {
     </div>
     ${state.notice ? `<p class="notice">${esc(state.notice)}</p>` : ''}
     ${composer}
+    ${filterBar}
     ${threads}`;
+}
+
+/** Short local time — a review is a conversation, and "who said it" is only half
+ *  the answer without "when". */
+function shortTime(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function threadHtml(item) {
   const t = item.thread;
+  // Where the reviewer was standing. A comment left on a contact sheet and one left
+  // on the component itself are otherwise indistinguishable, which matters as soon as
+  // more than one person is reviewing, or when an agent has to judge whether a remark
+  // was about the component or about how it sits among others.
+  const seenOn =
+    t.seenOnStoryId && t.seenOnStoryId !== t.storyId
+      ? (state.stories.find((s) => s.storyId === t.seenOnStoryId) || {}).title || t.seenOnStoryId
+      : null;
   const messages = item.messages
     .map(
       (m) =>
@@ -452,7 +572,7 @@ function threadHtml(item) {
   return `
     <div class="thread" data-thread="${t.id}">
       <div class="meta">
-        <span>${t.pin ? 'Pinned comment' : 'General'}</span>
+        <span>${t.pin ? 'Pinned comment' : 'General'} by <strong>${esc(t.createdBy.name)}</strong>${t.createdBy.kind === 'agent' ? ' (agent)' : ''} · ${esc(shortTime(t.createdAt))}${seenOn ? ` · on ${esc(seenOn)}` : ''}</span>
         <span>${esc(t.state)}</span>
       </div>
       ${t.screenshotAttachmentId ? `<img src="/api/attachments/${encodeURIComponent(t.screenshotAttachmentId)}" alt="Comment screenshot" loading="lazy" />` : ''}
@@ -489,6 +609,12 @@ function wireEvents(current) {
     el.addEventListener('click', () => setStatus(current.storyId, el.dataset.status)),
   );
   document.getElementById('pin-btn')?.addEventListener('click', enterPinMode);
+  document.getElementById('show-all')?.addEventListener('click', () => {
+    state.selectedRegion = null;
+    render();
+  });
+
+  pushStatusMap();
   document.getElementById('composer-post')?.addEventListener('click', () =>
     postComment(document.getElementById('composer-text')?.value ?? ''),
   );

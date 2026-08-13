@@ -1,5 +1,5 @@
 {
-  "name": "@greenroom/server",
+  "name": "@igility/greenroom-server",
   "version": "0.0.0",
   "description": "Greenroom sidecar: review store, magic-link reviewer auth, build hosting",
   "license": "MIT",
@@ -7,7 +7,13 @@
   "bin": {
     "greenroom": "./dist/cli.js"
   },
-  "files": ["dist", "shell"],
+  "files": [
+    "dist",
+    "shell"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",
     "prepack": "tsup src/cli.ts --format esm --clean",
@@ -16,7 +22,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@greenroom/shared": "workspace:*",
+    "@igility/greenroom-shared": "workspace:*",
     "@hono/node-server": "^2.1.0",
     "better-sqlite3": "^13.0.3",
     "fflate": "^0.8.2",
