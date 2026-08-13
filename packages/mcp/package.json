@@ -1,25 +1,35 @@
 {
   "name": "@greenroom/mcp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Greenroom MCP server: human review feedback, readable and answerable by agents",
   "license": "MIT",
   "type": "module",
+  "homepage": "https://github.com/igility/greenroom#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igility/greenroom.git",
+    "directory": "packages/mcp"
+  },
+  "keywords": ["mcp", "storybook", "code-review", "design-review", "ai-agents"],
   "bin": {
     "greenroom-mcp": "./dist/index.js"
   },
-  "files": ["dist"],
+  "files": ["dist", "README.md"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --clean",
-    "prepack": "tsup src/index.ts --format esm --clean",
+    "build": "tsup",
+    "prepack": "pnpm --filter @greenroom/shared build && tsup",
     "typecheck": "tsc",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@greenroom/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@greenroom/shared": "workspace:*",
     "@greenroom/server": "workspace:*",
     "@hono/node-server": "^2.1.0",
     "fflate": "^0.8.2",

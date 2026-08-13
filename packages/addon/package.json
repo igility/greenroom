@@ -1,13 +1,23 @@
 {
   "name": "@greenroom/addon",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Greenroom Storybook addon: Review panel + pin-drop overlay",
   "license": "MIT",
+  "homepage": "https://github.com/igility/greenroom#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igility/greenroom.git",
+    "directory": "packages/addon"
+  },
+  "keywords": ["storybook", "storybook-addon", "design-review", "code-review", "mcp"],
   "main": "./preset.js",
-  "files": ["dist", "preset.js"],
+  "files": ["dist", "preset.js", "README.md"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
-    "prepack": "tsup",
+    "prepack": "pnpm --filter @greenroom/shared build && tsup",
     "typecheck": "tsc",
     "test": "vitest run --passWithNoTests"
   },

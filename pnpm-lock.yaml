@@ -81,9 +81,6 @@ importers:
 
   packages/mcp:
     dependencies:
-      '@greenroom/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@3.25.76)
@@ -94,6 +91,9 @@ importers:
       '@greenroom/server':
         specifier: workspace:*
         version: link:../server
+      '@greenroom/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@hono/node-server':
         specifier: ^2.1.0
         version: 2.1.0(hono@4.13.1)
