@@ -1,10 +1,25 @@
 import { finder } from '@medv/finder';
 import { domToPng } from 'modern-screenshot';
-import type { Pin } from '@greenroom/shared';
+import { TILE_SELECTOR, TILE_ATTR, type Pin } from '@igility/greenroom-shared';
+import { STATUS_STYLE_ID } from './constants.js';
 
 export interface Capture {
   pin: Pin;
   screenshotDataUrl: string | null;
+  /**
+   * The declared region the click landed in — the story id from the host's
+   * `data-greenroom-story` attribute — or null when the click was on undeclared
+   * markup (a heading, the gap between tiles, a plain single-component story).
+   */
+  regionStoryId: string | null;
+  /**
+   * True when the target rendered outside the story root entirely — a popover,
+   * modal or listbox portalled to document.body. The screenshot is then a viewport
+   * capture rather than an element render, because an element render of the tile
+   * would show the trigger in its closed state: a plausible, confident picture of
+   * the wrong thing, which is worse evidence than an obviously unhelpful one.
+   */
+  portalCaptured: boolean;
 }
 
 let overlay: HTMLDivElement | null = null;
@@ -19,8 +34,26 @@ export function cancelPinMode() {
   }
 }
 
-/** Cover the story with a crosshair layer; one click captures selector, position,
- * viewport, and a DOM screenshot of the story root. Esc cancels. */
+/** The nearest ancestor (or self) the host has declared as representing a story. */
+export function regionOf(el: Element): HTMLElement | null {
+  return el.closest<HTMLElement>(TILE_SELECTOR);
+}
+
+/** Every declared region inside a rendered story, in document order. */
+export function regionsIn(root: ParentNode): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(TILE_SELECTOR));
+}
+
+/**
+ * Cover the story with a crosshair layer; one click captures the region it landed in,
+ * a region-relative selector, position, viewport, and a screenshot.
+ *
+ * Scoping both the selector and the screenshot to the region is what makes a contact
+ * sheet reviewable. A selector generated against the whole sheet degrades to a deep
+ * positional path once thirty near-identical controls are on the page, and re-points at
+ * a different tile the moment the grid is reordered; a screenshot of the whole sheet
+ * leaves an agent thirty components to guess between. Esc cancels.
+ */
 export function enterPinMode(onCapture: (c: Capture) => void, onCancel?: () => void) {
   if (overlay) return;
 
@@ -49,12 +82,22 @@ export function enterPinMode(onCapture: (c: Capture) => void, onCancel?: () => v
       .elementsFromPoint(e.clientX, e.clientY)
       .find((el) => el !== overlay && !overlay!.contains(el));
 
+    const root = storyRoot();
+    const el = target instanceof Element && target !== document.body ? target : null;
+    const region = el ? regionOf(el) : null;
+    // Portalled overlays render to document.body, outside the story root and outside
+    // any region. Detect it rather than letting the selector silently degrade.
+    const portalCaptured = !!el && !!root && !root.contains(el);
+
+    // Anchor the selector to the region when there is one: region-relative selectors
+    // stay short and stable while the surrounding grid changes around them.
+    const selectorRoot = region ?? root ?? document.body;
     let selector = 'body';
-    if (target instanceof Element && target !== document.body) {
+    if (el) {
       try {
-        selector = finder(target, { root: storyRoot() ?? document.body });
+        selector = finder(el, { root: selectorRoot });
       } catch {
-        selector = target.tagName.toLowerCase();
+        selector = el.tagName.toLowerCase();
       }
     }
 
@@ -69,14 +112,34 @@ export function enterPinMode(onCapture: (c: Capture) => void, onCancel?: () => v
     // Remove the overlay before screenshotting so the capture is clean.
     cancelPinMode();
 
-    let screenshotDataUrl: string | null = null;
-    try {
-      screenshotDataUrl = await domToPng(storyRoot() ?? document.body);
-    } catch {
-      screenshotDataUrl = null;
-    }
+    // Render the region itself rather than rasterising the whole root and cropping.
+    // Storybook clips the story root to max-height:100vh and modern-screenshot does not
+    // restore scroll position by default, so on a scrolled sheet a crop of the root is
+    // taken from a render of the TOP of the sheet — the wrong component, confidently
+    // framed. Rendering the element directly also cuts the image size and the latency.
+    // Status decoration is review chrome, not the design. Suppress it for the shot so
+    // the evidence shows the component exactly as the client's users will see it.
+    const paint = document.getElementById(STATUS_STYLE_ID);
+    const keptPaint = paint?.textContent ?? null;
+    if (paint) paint.textContent = '';
 
-    onCapture({ pin, screenshotDataUrl });
+    const shotTarget = portalCaptured ? null : (region ?? root ?? document.body);
+    let screenshotDataUrl: string | null = null;
+    if (shotTarget) {
+      try {
+        screenshotDataUrl = await domToPng(shotTarget);
+      } catch {
+        screenshotDataUrl = null;
+      }
+    }
+    if (paint && keptPaint !== null) paint.textContent = keptPaint;
+
+    onCapture({
+      pin,
+      screenshotDataUrl,
+      regionStoryId: region?.getAttribute(TILE_ATTR) || null,
+      portalCaptured,
+    });
   });
 
   document.body.appendChild(overlay);

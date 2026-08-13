@@ -13,12 +13,16 @@ import {
   type Principal,
   type Reviewer,
   type ReviewerRole,
+  type RegionFingerprint,
+  type SheetMember,
   type StatusEvent,
   type Story,
+  type StoryKind,
   type StoryState,
   type Thread,
   type ThreadState,
-} from '@greenroom/shared';
+  ROOT_REGION,
+} from '@igility/greenroom-shared';
 import type { DB } from './db.js';
 import { id, nowIso, secret, sha256Hex, HttpError } from './util.js';
 import { manifestHash, parseStoryIndex, readZip, writeEntries, type ZipEntries } from './zip.js';
@@ -64,8 +68,13 @@ export class Store {
 
     const stories = parseStoryIndex(entries);
     const buildId = id();
-    const storagePath = path.join(this.dataDir, 'builds', buildId);
-    writeEntries(entries, storagePath);
+    // Recorded relative to the data directory, resolved against it on read. An absolute
+    // path survives a backup and restore only while the data directory keeps its old
+    // location: restore onto a new host or a renamed mount and the review history loads
+    // perfectly while every asset of every build 404s — a restore that looks like it
+    // worked and is not.
+    const storagePath = path.join('builds', buildId);
+    writeEntries(entries, path.resolve(this.dataDir, storagePath));
 
     let newStories = 0;
     let reconfirmed = 0;
@@ -81,17 +90,19 @@ export class Store {
 
       const getStory = this.db.prepare('SELECT * FROM stories WHERE story_id = ?');
       const insertStory = this.db.prepare(
-        `INSERT INTO stories (story_id, title, import_path, state, anchor_build_id, last_seen_build_id, created_at)
-         VALUES (?, ?, ?, 'in_review', NULL, ?, ?)`,
+        `INSERT INTO stories (story_id, title, import_path, kind, state, anchor_build_id, last_seen_build_id, created_at)
+         VALUES (?, ?, ?, ?, 'in_review', NULL, ?, ?)`,
       );
+      // Kind is refreshed too: adding or removing the sheet tag reclassifies the story
+      // on the next upload rather than stranding it in whatever it was first seen as.
       const refreshStory = this.db.prepare(
-        'UPDATE stories SET title = ?, import_path = ?, last_seen_build_id = ? WHERE story_id = ?',
+        'UPDATE stories SET title = ?, import_path = ?, kind = ?, last_seen_build_id = ? WHERE story_id = ?',
       );
 
       for (const s of stories) {
         const existingStory = getStory.get(s.storyId) as StoryRow | undefined;
         if (!existingStory) {
-          insertStory.run(s.storyId, s.title, s.importPath, buildId, at);
+          insertStory.run(s.storyId, s.title, s.importPath, s.kind, buildId, at);
           this.insertEvent(s.storyId, null, 'in_review', by, {
             buildId,
             note: `First seen in build "${meta.label}".`,
@@ -99,7 +110,12 @@ export class Store {
           newStories++;
           continue;
         }
-        refreshStory.run(s.title, s.importPath, buildId, s.storyId);
+        refreshStory.run(s.title, s.importPath, s.kind, buildId, s.storyId);
+        // A sheet is not a review unit, so a new build never puts one in the
+        // re-confirm queue — its status is a rollup over members that recompute
+        // themselves. Without this guard every sheet would land in "needs your
+        // attention" on every upload.
+        if (s.kind === 'sheet') continue;
         if (existingStory.state === 'approved' && existingStory.anchor_build_id !== buildId) {
           this.db
             .prepare("UPDATE stories SET state = 'needs_reconfirm' WHERE story_id = ?")
@@ -141,7 +157,15 @@ export class Store {
   /** Absolute path of a file inside a build's extracted tree, traversal-safe. */
   buildFilePath(buildId: string, relPath: string): string {
     const build = this.getBuild(buildId);
-    const root = path.resolve((this.db.prepare('SELECT storage_path FROM builds WHERE id = ?').get(build.id) as { storage_path: string }).storage_path);
+    // Resolved against the data directory. `path.resolve` ignores the base when the
+    // stored value is already absolute, so a row the v4 migration did not rewrite — a
+    // path written in some shape it did not recognise — still resolves as it always did.
+    const stored = (
+      this.db.prepare('SELECT storage_path FROM builds WHERE id = ?').get(build.id) as {
+        storage_path: string;
+      }
+    ).storage_path;
+    const root = path.resolve(this.dataDir, stored);
     const resolved = path.resolve(root, relPath === '' ? 'index.html' : relPath);
     if (resolved !== root && !resolved.startsWith(root + path.sep)) {
       throw new HttpError(400, 'Invalid path.');
@@ -151,17 +175,48 @@ export class Store {
 
   // ── stories + status ──────────────────────────────────────────────────────
 
-  listStories(filter: { state?: StoryState } = {}): (Story & { openThreads: number })[] {
-    const rows = filter.state
-      ? (this.db.prepare('SELECT * FROM stories WHERE state = ? ORDER BY story_id').all(filter.state) as StoryRow[])
-      : (this.db.prepare('SELECT * FROM stories ORDER BY story_id').all() as StoryRow[]);
+  /**
+   * `kind` defaults to every story, because the reviewer shell needs sheets — they are
+   * the surface it navigates. Consumers that must never see a sheet (above all the
+   * agent's work queue, where a sheet would send an agent to edit the review instrument
+   * instead of the product) pass `kind: 'story'` explicitly.
+   */
+  listStories(
+    filter: { state?: StoryState; kind?: StoryKind } = {},
+  ): (Story & { openThreads: number })[] {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter.state) {
+      where.push('state = ?');
+      params.push(filter.state);
+    }
+    if (filter.kind) {
+      where.push('kind = ?');
+      params.push(filter.kind);
+    }
+    const sql = `SELECT * FROM stories${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY story_id`;
+    const rows = this.db.prepare(sql).all(...params) as StoryRow[];
     const openCount = this.db.prepare(
       "SELECT COUNT(*) AS n FROM threads WHERE story_id = ? AND state = 'open'",
     );
-    return rows.map((r) => ({
-      ...rowToStory(r),
-      openThreads: (openCount.get(r.story_id) as { n: number }).n,
-    }));
+    // A sheet's own bubble must roll up its tiles. Routed comments live on the
+    // component, so counting only `story_id = sheet` would show a page the reviewer
+    // has commented on twelve times as having nothing on it — and send them hunting
+    // through the component list for their own words, which is the problem contact
+    // sheets exist to remove.
+    const openRollup = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM threads WHERE state = 'open'
+         AND (story_id = ? OR seen_on_story_id = ? OR story_id IN
+              (SELECT member_story_id FROM sheet_members WHERE sheet_story_id = ?))`,
+    );
+    return rows.map((r) => {
+      const story = rowToStory(r);
+      const counter =
+        story.kind === 'sheet'
+          ? (openRollup.get(r.story_id, r.story_id, r.story_id) as { n: number })
+          : (openCount.get(r.story_id) as { n: number });
+      return { ...story, openThreads: counter.n };
+    });
   }
 
   getStory(storyId: string): Story {
@@ -183,6 +238,19 @@ export class Store {
     opts: { buildId?: string; note?: string } = {},
   ): Story {
     const story = this.getStory(storyId);
+
+    // A contact sheet surveys other stories; it is not a review unit. Approving one
+    // would write a human sign-off for a surface that reviews nothing, while the
+    // components it shows sit unapproved — and the audit export could not tell the
+    // difference. Its status is a rollup, computed from members, never stored here.
+    if (story.kind === 'sheet') {
+      throw new HttpError(
+        400,
+        `"${story.title}" is a contact sheet, not a reviewable item — approve the components it shows instead.`,
+        'NOT_A_REVIEW_UNIT',
+      );
+    }
+
     const policy = this.agentApprovalPolicy();
     const decision = canTransition(by.kind, story.state, to, {
       policy,
@@ -276,9 +344,21 @@ export class Store {
 
   // ── threads + messages ────────────────────────────────────────────────────
 
+  /**
+   * `regionStoryId` is the tile the reviewer clicked. When it resolves to a story in
+   * this build, the thread is ATTRIBUTED to that component — its own thread, next to
+   * everything else about it, cleared when it is approved — and the surface the
+   * reviewer was standing on is recorded as `seenOn`.
+   *
+   * An unresolved region is not an error and never rejects the comment: a reviewer who
+   * has typed something must not lose it because a tile id in host markup went stale.
+   * The thread falls back to the surface itself, which is where a comment about the
+   * page as a whole belongs anyway.
+   */
   createThread(
     input: {
       storyId: string;
+      regionStoryId?: string | null;
       buildId: string;
       body: string;
       pin?: Pin;
@@ -287,8 +367,24 @@ export class Store {
     },
     by: Principal,
   ): FeedbackItem {
-    this.getStory(input.storyId);
+    const surface = this.getStory(input.storyId);
     this.getBuild(input.buildId);
+
+    let targetStoryId = input.storyId;
+    let seenOn: string | null = null;
+    if (input.regionStoryId && input.regionStoryId !== input.storyId) {
+      const region = this.db
+        .prepare('SELECT 1 FROM stories WHERE story_id = ? AND last_seen_build_id = ?')
+        .get(input.regionStoryId, input.buildId);
+      if (region) {
+        targetStoryId = input.regionStoryId;
+        seenOn = input.storyId;
+      }
+    }
+    // A comment left directly on a sheet — not on any tile — still belongs to the sheet,
+    // and seenOn records that plainly rather than leaving it to be inferred.
+    if (seenOn === null && surface.kind === 'sheet') seenOn = input.storyId;
+
     // A screenshot reference must point at a real attachment row — never accept
     // an arbitrary client-supplied string (it is later rendered in an <img src>).
     if (input.screenshotAttachmentId !== undefined) this.getAttachment(input.screenshotAttachmentId);
@@ -298,13 +394,14 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO threads
-             (id, story_id, build_id, state, selector, x, y, viewport_w, viewport_h,
+             (id, story_id, seen_on_story_id, build_id, state, selector, x, y, viewport_w, viewport_h,
               args_json, screenshot_attachment_id, created_by_kind, created_by_id, created_by_name, created_at)
-           VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           threadId,
-          input.storyId,
+          targetStoryId,
+          seenOn,
           input.buildId,
           input.pin?.selector ?? null,
           input.pin?.x ?? null,
@@ -355,12 +452,36 @@ export class Store {
     return this.getFeedbackItem(threadId);
   }
 
+  /**
+   * Asking for a SHEET's feedback returns everything a reviewer standing on that sheet
+   * should see, which is deliberately wider than `story_id = ?`:
+   *
+   *   - threads on the sheet itself (a comment about the page as a whole),
+   *   - threads left while on this sheet but attributed to a tile (`seen_on`), and
+   *   - threads on any story this sheet surveys, whoever raised them and wherever.
+   *
+   * The second is what stops a reviewer's own comment disappearing the instant they
+   * post it. The third is what stops a second reviewer, arriving via a different sheet
+   * that shows the same component, from seeing a clean tile and approving over an open
+   * flag someone else raised.
+   */
   listFeedback(filter: { storyId?: string; threadState?: ThreadState } = {}): FeedbackItem[] {
     const clauses: string[] = [];
     const params: string[] = [];
     if (filter.storyId) {
-      clauses.push('story_id = ?');
-      params.push(filter.storyId);
+      const surface = this.db
+        .prepare('SELECT kind FROM stories WHERE story_id = ?')
+        .get(filter.storyId) as { kind: string } | undefined;
+      if (surface?.kind === 'sheet') {
+        clauses.push(
+          `(story_id = ? OR seen_on_story_id = ? OR story_id IN
+             (SELECT member_story_id FROM sheet_members WHERE sheet_story_id = ?))`,
+        );
+        params.push(filter.storyId, filter.storyId, filter.storyId);
+      } else {
+        clauses.push('story_id = ?');
+        params.push(filter.storyId);
+      }
     }
     if (filter.threadState) {
       clauses.push('state = ?');
@@ -403,23 +524,152 @@ export class Store {
 
   // ── fingerprints ──────────────────────────────────────────────────────────
 
-  putFingerprint(storyId: string, buildId: string, hash: string) {
+  putFingerprint(storyId: string, buildId: string, hash: string, regionKey = ROOT_REGION) {
     this.getStory(storyId);
     this.getBuild(buildId);
-    this.db
-      .prepare(
-        `INSERT INTO fingerprints (story_id, build_id, hash, created_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(story_id, build_id) DO UPDATE SET hash = excluded.hash, created_at = excluded.created_at`,
-      )
-      .run(storyId, buildId, hash, nowIso());
+    this.writeFingerprint(storyId, buildId, regionKey, hash, nowIso());
   }
 
+  /**
+   * Record a story's whole-root hash together with the per-region hashes observed in
+   * the same render, and — for a sheet — the membership that render implies.
+   *
+   * Membership and per-region hashes come from one traversal at render time because
+   * they answer the same question: which stories does this surface show, and has each
+   * of them moved. Deriving membership here rather than from a hand-maintained list is
+   * what keeps it from rotting; recording it per build is what makes a member that
+   * disappears from the codebase visible instead of silently absent.
+   */
+  putRenderReport(
+    storyId: string,
+    buildId: string,
+    input: { hash: string; regions?: RegionFingerprint[] },
+  ): { recorded: number; unresolved: string[] } {
+    const story = this.getStory(storyId);
+    this.getBuild(buildId);
+    const at = nowIso();
+    const declared = input.regions ?? [];
+
+    // A region key is a story id living in the HOST's own markup, which Greenroom
+    // cannot rewrite. Retitle a component and Storybook regenerates its id, but the
+    // string literal in the sheet that names it does not change and the build still
+    // succeeds. Accepting it would record membership and a fingerprint for a story
+    // absent from this build, then report a confident `changed` verdict computed
+    // against nothing — the exact class of confidently-wrong artifact this design
+    // exists to prevent. Unresolved regions are dropped and reported instead, so the
+    // problem surfaces once at build level rather than as per-tile noise.
+    const known = this.db.prepare(
+      'SELECT 1 FROM stories WHERE story_id = ? AND last_seen_build_id = ?',
+    );
+    const regions: RegionFingerprint[] = [];
+    const unresolved: string[] = [];
+    for (const r of declared) {
+      if (r.regionKey === ROOT_REGION) continue;
+      if (known.get(r.regionKey, buildId)) regions.push(r);
+      else unresolved.push(r.regionKey);
+    }
+
+    this.db.transaction(() => {
+      this.writeFingerprint(storyId, buildId, ROOT_REGION, input.hash, at);
+      for (const r of regions) {
+        this.writeFingerprint(storyId, buildId, r.regionKey, r.hash, at);
+      }
+      if (story.kind !== 'sheet') return;
+
+      // Replace rather than merge: a tile removed from the sheet must disappear from
+      // this build's membership, or the rollup keeps counting something nobody can see.
+      this.db
+        .prepare('DELETE FROM sheet_members WHERE sheet_story_id = ? AND build_id = ?')
+        .run(storyId, buildId);
+      const insert = this.db.prepare(
+        `INSERT INTO sheet_members (sheet_story_id, member_story_id, build_id, position, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      regions.forEach((r, i) => insert.run(storyId, r.regionKey, buildId, i, at));
+    })();
+
+    return { recorded: regions.length, unresolved };
+  }
+
+  private writeFingerprint(
+    storyId: string,
+    buildId: string,
+    regionKey: string,
+    hash: string,
+    at: string,
+  ) {
+    this.db
+      .prepare(
+        `INSERT INTO fingerprints (story_id, build_id, region_key, hash, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(story_id, build_id, region_key)
+           DO UPDATE SET hash = excluded.hash, created_at = excluded.created_at`,
+      )
+      .run(storyId, buildId, regionKey, hash, at);
+  }
+
+  // ── sheet membership ──────────────────────────────────────────────────────
+
+  /** Stories surveyed by a sheet in a given build, in render order. */
+  sheetMembers(sheetStoryId: string, buildId: string): SheetMember[] {
+    const rows = this.db
+      .prepare(
+        `SELECT sheet_story_id, member_story_id, build_id, position FROM sheet_members
+         WHERE sheet_story_id = ? AND build_id = ? ORDER BY position`,
+      )
+      .all(sheetStoryId, buildId) as {
+      sheet_story_id: string;
+      member_story_id: string;
+      build_id: string;
+      position: number;
+    }[];
+    return rows.map((r) => ({
+      sheetStoryId: r.sheet_story_id,
+      memberStoryId: r.member_story_id,
+      buildId: r.build_id,
+      position: r.position,
+    }));
+  }
+
+  /**
+   * Per-member change verdicts for a sheet: did this tile's render move since that
+   * member's own approval was pinned? This is what lets a second review round show
+   * only the tiles that actually changed instead of re-presenting the whole sheet.
+   *
+   * A member with no approval anchor has nothing to compare against and reads
+   * `unknown` — never `likely_unchanged`, which would imply a check that never ran.
+   */
+  sheetRegionVerdicts(
+    sheetStoryId: string,
+    buildId: string,
+  ): { storyId: string; verdict: FingerprintVerdict }[] {
+    const fp = this.db.prepare(
+      'SELECT hash FROM fingerprints WHERE story_id = ? AND build_id = ? AND region_key = ?',
+    );
+    const getStory = this.db.prepare('SELECT * FROM stories WHERE story_id = ?');
+    return this.sheetMembers(sheetStoryId, buildId).map((m) => {
+      const member = getStory.get(m.memberStoryId) as StoryRow | undefined;
+      const current = fp.get(sheetStoryId, buildId, m.memberStoryId) as
+        | { hash: string }
+        | undefined;
+      const anchorBuild = member?.anchor_build_id ?? null;
+      const anchor = anchorBuild
+        ? (fp.get(sheetStoryId, anchorBuild, m.memberStoryId) as { hash: string } | undefined)
+        : undefined;
+      let verdict: FingerprintVerdict = 'unknown';
+      if (current && anchor) verdict = current.hash === anchor.hash ? 'likely_unchanged' : 'changed';
+      return { storyId: m.memberStoryId, verdict };
+    });
+  }
+
+  /** Stories fingerprinted in a build — root hashes only, so per-region rows don't
+   * inflate what is meant to read as "how much of this build has been swept". */
   fingerprintCount(buildId: string): number {
     this.getBuild(buildId);
     return (
-      this.db.prepare('SELECT COUNT(*) AS n FROM fingerprints WHERE build_id = ?').get(buildId) as {
-        n: number;
-      }
+      this.db
+        .prepare('SELECT COUNT(*) AS n FROM fingerprints WHERE build_id = ? AND region_key = ?')
+        .get(buildId, ROOT_REGION) as { n: number }
     ).n;
   }
 
@@ -430,12 +680,14 @@ export class Store {
     const rows = this.db
       .prepare("SELECT * FROM stories WHERE state = 'needs_reconfirm' AND last_seen_build_id = ?")
       .all(buildId) as StoryRow[];
-    const fp = this.db.prepare('SELECT hash FROM fingerprints WHERE story_id = ? AND build_id = ?');
+    const fp = this.db.prepare(
+      'SELECT hash FROM fingerprints WHERE story_id = ? AND build_id = ? AND region_key = ?',
+    );
     const items = rows.map((r) => {
       const story = rowToStory(r);
-      const current = fp.get(story.storyId, buildId) as { hash: string } | undefined;
+      const current = fp.get(story.storyId, buildId, ROOT_REGION) as { hash: string } | undefined;
       const anchor = story.anchorBuildId
-        ? (fp.get(story.storyId, story.anchorBuildId) as { hash: string } | undefined)
+        ? (fp.get(story.storyId, story.anchorBuildId, ROOT_REGION) as { hash: string } | undefined)
         : undefined;
       let verdict: FingerprintVerdict = 'unknown';
       if (current && anchor) verdict = current.hash === anchor.hash ? 'likely_unchanged' : 'changed';
@@ -653,6 +905,8 @@ interface StoryRow {
   story_id: string;
   title: string;
   import_path: string;
+  /** Absent on rows read back by pre-v2 code paths in tests; defaults to 'story'. */
+  kind: string | null;
   state: string;
   anchor_build_id: string | null;
   last_seen_build_id: string;
@@ -661,6 +915,7 @@ interface StoryRow {
 interface ThreadRow {
   id: string;
   story_id: string;
+  seen_on_story_id: string | null;
   build_id: string;
   state: string;
   selector: string | null;
@@ -752,6 +1007,7 @@ const rowToStory = (r: StoryRow): Story => ({
   storyId: r.story_id,
   title: r.title,
   importPath: r.import_path,
+  kind: (r.kind ?? 'story') as StoryKind,
   state: r.state as StoryState,
   anchorBuildId: r.anchor_build_id,
   lastSeenBuildId: r.last_seen_build_id,
@@ -760,6 +1016,7 @@ const rowToStory = (r: StoryRow): Story => ({
 const rowToThread = (r: ThreadRow): Thread => ({
   id: r.id,
   storyId: r.story_id,
+  seenOnStoryId: r.seen_on_story_id ?? null,
   buildId: r.build_id,
   state: r.state as ThreadState,
   pin:

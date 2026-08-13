@@ -1,5 +1,5 @@
 {
-  "name": "@greenroom/shared",
+  "name": "@igility/greenroom-shared",
   "version": "0.0.0",
   "description": "Shared types, status policy, and fingerprint helpers for Greenroom",
   "license": "MIT",

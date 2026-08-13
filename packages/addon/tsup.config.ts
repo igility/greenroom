@@ -17,7 +17,7 @@ export default defineConfig({
   platform: 'browser',
   clean: true,
   external: storybookProvided,
-  noExternal: ['@greenroom/shared', '@medv/finder', 'modern-screenshot'],
+  noExternal: ['@igility/greenroom-shared', '@medv/finder', 'modern-screenshot'],
   esbuildOptions(options) {
     // Classic JSX transform: elements come from the Storybook-provided `react`
     // global. The automatic runtime would resolve react/jsx-runtime from the

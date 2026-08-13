@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { AGENT_APPROVAL_WARNING } from '@greenroom/shared';
+import { AGENT_APPROVAL_WARNING } from '@igility/greenroom-shared';
 import { z } from 'zod';
 import type { FeedbackItem, SidecarClient } from './client.js';
 
@@ -20,6 +20,16 @@ const feedbackView = (item: FeedbackItem) => ({
   threadState: item.thread.state,
   buildId: item.thread.buildId,
   story: item.story,
+  /**
+   * The surface the reviewer was looking at when they said it, when it differs from
+   * `story` — a contact sheet showing this component among many others.
+   *
+   * This changes how a remark should be read. "Make this smaller" said while looking
+   * at one component is about the component; said while looking at a grid of thirty,
+   * it may be about how it sits among its neighbours. Never edit the surface's own
+   * file in response — a contact sheet is a review instrument, not the product.
+   */
+  seenOnStoryId: item.thread.seenOnStoryId,
   pin: item.thread.pin,
   args: item.thread.args,
   hasScreenshot: item.thread.screenshotAttachmentId !== null,

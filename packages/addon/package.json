@@ -1,5 +1,5 @@
 {
-  "name": "@greenroom/addon",
+  "name": "@igility/greenroom-addon",
   "version": "0.1.0",
   "description": "Greenroom Storybook addon: Review panel + pin-drop overlay",
   "license": "MIT",
@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "prepack": "pnpm --filter @greenroom/shared build && tsup",
+    "prepack": "pnpm --filter @igility/greenroom-shared build && tsup",
     "typecheck": "tsc",
     "test": "vitest run --passWithNoTests"
   },
@@ -25,7 +25,7 @@
     "storybook": "^10.0.0"
   },
   "devDependencies": {
-    "@greenroom/shared": "workspace:*",
+    "@igility/greenroom-shared": "workspace:*",
     "@medv/finder": "^4.0.2",
     "@types/react": "^19.2.0",
     "modern-screenshot": "^4.7.0",

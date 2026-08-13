@@ -7,8 +7,8 @@ import { zipSync } from 'fflate';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { AGENT_APPROVAL_WARNING, type Principal } from '@greenroom/shared';
-// @greenroom/server exports only its built CLI; tests reach into src directly.
+import { AGENT_APPROVAL_WARNING, type Principal } from '@igility/greenroom-shared';
+// @igility/greenroom-server exports only its built CLI; tests reach into src directly.
 import { createApp } from '../../server/src/app.js';
 import { openMemoryDb } from '../../server/src/db.js';
 import { Store } from '../../server/src/store.js';

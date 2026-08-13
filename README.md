@@ -10,13 +10,13 @@ exact pin — and do the work. Nothing ships until a person signs off.
 
 ## How it fits together
 
-- **`@greenroom/addon`** — a thin Storybook addon: a Review panel in the manager and a
+- **`@igility/greenroom-addon`** — a thin Storybook addon: a Review panel in the manager and a
   pin-drop overlay on the preview canvas. Capture and display only; no state lives here.
-- **`@greenroom/server`** — the sidecar: a small Node + SQLite service you deploy next to
+- **`@igility/greenroom-server`** — the sidecar: a small Node + SQLite service you deploy next to
   a static Storybook build. Holds threads, per-story status, reviewers, magic links, and
   the audit trail. Reviewers get a plain review page via magic link — no GitHub account,
   no Storybook UI.
-- **`@greenroom/mcp`** — an MCP server over the store. Agents list open feedback with
+- **`@igility/greenroom-mcp`** — an MCP server over the store. Agents list open feedback with
   full context, reply, and mark work addressed.
 
 Approvals bind to a specific build (content-manifest hash). When a new build is uploaded,
@@ -91,7 +91,7 @@ The agent then sees `list_stories` (state `changes_requested` is its work queue)
 
 ```ts
 // .storybook/main.ts
-export default { addons: ['@greenroom/addon'] };
+export default { addons: ['@igility/greenroom-addon'] };
 ```
 
 ## Deploy the sidecar

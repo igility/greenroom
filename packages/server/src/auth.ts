@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
-import type { Principal, PrincipalKind } from '@greenroom/shared';
+import type { Principal, PrincipalKind } from '@igility/greenroom-shared';
 import type { Config } from './config.js';
 import type { Store } from './store.js';
 import { sha256Hex, HttpError } from './util.js';

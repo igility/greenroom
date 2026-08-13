@@ -1,5 +1,5 @@
 {
-  "name": "@greenroom/mcp",
+  "name": "@igility/greenroom-mcp",
   "version": "0.1.0",
   "description": "Greenroom MCP server: human review feedback, readable and answerable by agents",
   "license": "MIT",
@@ -20,7 +20,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "prepack": "pnpm --filter @greenroom/shared build && tsup",
+    "prepack": "pnpm --filter @igility/greenroom-shared build && tsup",
     "typecheck": "tsc",
     "test": "vitest run --passWithNoTests"
   },
@@ -29,8 +29,8 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@greenroom/shared": "workspace:*",
-    "@greenroom/server": "workspace:*",
+    "@igility/greenroom-shared": "workspace:*",
+    "@igility/greenroom-server": "workspace:*",
     "@hono/node-server": "^2.1.0",
     "fflate": "^0.8.2",
     "@types/node": "^22.18.0",

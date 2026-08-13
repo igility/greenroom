@@ -10,10 +10,10 @@ COPY . .
 # Install and build only the two packages the sidecar needs at runtime, then
 # produce a self-contained deployable (server + its prod deps, incl. the built
 # native better-sqlite3 binding and the bundled shared package).
-RUN pnpm install --filter @greenroom/server... \
- && pnpm --filter @greenroom/shared build \
- && pnpm --filter @greenroom/server build \
- && pnpm --filter @greenroom/server deploy --legacy --prod /out
+RUN pnpm install --filter @igility/greenroom-server... \
+ && pnpm --filter @igility/greenroom-shared build \
+ && pnpm --filter @igility/greenroom-server build \
+ && pnpm --filter @igility/greenroom-server deploy --legacy --prod /out
 
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
