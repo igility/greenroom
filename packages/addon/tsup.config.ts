@@ -6,6 +6,7 @@ import { defineConfig } from 'tsup';
 const storybookProvided = [
   'react',
   'react-dom',
+  '@storybook/icons',
   'react/jsx-runtime',
   'react-dom/client',
   /^storybook\/.*/,

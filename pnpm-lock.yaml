@@ -57,6 +57,9 @@ importers:
       '@medv/finder':
         specifier: ^4.0.2
         version: 4.0.2
+      '@storybook/icons':
+        specifier: ^2.1.0
+        version: 2.1.0(react@19.2.8)
       '@types/react':
         specifier: ^19.2.0
         version: 19.2.18

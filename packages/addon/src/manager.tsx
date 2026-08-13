@@ -1,8 +1,34 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { addons, types, useChannel, useParameter, useStorybookApi } from 'storybook/manager-api';
+import { IconButton, TooltipNote, WithTooltip } from 'storybook/internal/components';
+import { CheckIcon, EditIcon, PinAltIcon, PowerIcon, UndoIcon } from '@storybook/icons';
 import type { Story, StoryState } from '@igility/greenroom-shared';
 import { Sidecar, type Conn, type FeedbackItem } from './api.js';
 import { ADDON_ID, EVENTS, PANEL_ID, PARAM_KEY, type CapturedPin } from './constants.js';
+
+/**
+ * Controls are Storybook's own `IconButton` with its own tooltip, not styled `<button>`s.
+ * Hand-rolled buttons set a background without setting a colour, so the label inherited
+ * whatever the active Storybook theme used and went invisible — white on white under a
+ * light theme. Borrowing the host's components means the panel follows any theme the host
+ * picks, for free, and the hover labels match the ones on Storybook's own toolbars.
+ */
+const Action: React.FC<{
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}> = ({ label, icon, onClick, disabled }) => (
+  <WithTooltip
+    hasChrome={false}
+    trigger="hover"
+    tooltip={<TooltipNote note={label} />}
+  >
+    <IconButton aria-label={label} onClick={onClick} disabled={disabled}>
+      {icon}
+    </IconButton>
+  </WithTooltip>
+);
 
 const CONN_KEY = 'greenroom-conn';
 
@@ -22,36 +48,37 @@ const STATE_COLOR: Record<StoryState, string> = {
   needs_reconfirm: '#dc2626',
 };
 
-const ACTIONS: Record<StoryState, { label: string; to: StoryState }[]> = {
-  in_review: [
-    { label: 'Approve', to: 'approved' },
-    { label: 'Request changes', to: 'changes_requested' },
-  ],
+/** The label is the hover tooltip, so it stays the full sentence rather than being
+ *  shortened to fit a button. */
+const APPROVE = { label: 'Approve', to: 'approved' as StoryState, icon: <CheckIcon /> };
+const REQUEST = {
+  label: 'Request changes',
+  to: 'changes_requested' as StoryState,
+  icon: <EditIcon />,
+};
+
+const ACTIONS: Record<StoryState, { label: string; to: StoryState; icon: React.ReactNode }[]> = {
+  in_review: [APPROVE, REQUEST],
   changes_requested: [
-    { label: 'Approve', to: 'approved' },
-    { label: 'Back to review', to: 'in_review' },
+    APPROVE,
+    { label: 'Back to review', to: 'in_review', icon: <UndoIcon /> },
   ],
-  addressed: [
-    { label: 'Approve', to: 'approved' },
-    { label: 'Request changes', to: 'changes_requested' },
-  ],
-  approved: [
-    { label: 'Reopen', to: 'in_review' },
-    { label: 'Request changes', to: 'changes_requested' },
-  ],
-  needs_reconfirm: [
-    { label: 'Approve again', to: 'approved' },
-    { label: 'Request changes', to: 'changes_requested' },
-  ],
+  addressed: [APPROVE, REQUEST],
+  approved: [{ label: 'Reopen', to: 'in_review', icon: <UndoIcon /> }, REQUEST],
+  needs_reconfirm: [{ ...APPROVE, label: 'Approve again' }, REQUEST],
 };
 
 const box: React.CSSProperties = { padding: 14, font: '13px/1.5 system-ui', color: '#1f2430' };
+/** `color` is not optional here. Without it the label inherits the active Storybook
+ *  theme's text colour, which under a light theme is near-white — on this white
+ *  background the button renders as an empty box. */
 const btn: React.CSSProperties = {
   font: '600 12px/1 system-ui',
   padding: '6px 12px',
   borderRadius: 6,
   border: '1px solid #d9dee6',
   background: '#fff',
+  color: '#1f2430',
   cursor: 'pointer',
   marginRight: 6,
 };
@@ -156,7 +183,7 @@ const Thread: React.FC<{ item: FeedbackItem; client: Sidecar; onChanged: () => v
           onKeyDown={(e) => e.key === 'Enter' && send()}
         />
         {item.thread.state !== 'resolved' ? (
-          <button style={btn} onClick={() => client.setThreadState(item.thread.id, 'resolved').then(onChanged)}>
+          <button style={btn} onClick={() => void client.setThreadState(item.thread.id, 'resolved').then(onChanged)}>
             Resolve
           </button>
         ) : null}
@@ -273,28 +300,26 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
               {STATE_LABEL[story.state]}
             </span>
             {ACTIONS[story.state].map((a) => (
-              <button key={a.to} style={btn} onClick={() => act(a.to)}>
-                {a.label}
-              </button>
+              <Action key={a.to} label={a.label} icon={a.icon} onClick={() => act(a.to)} />
             ))}
           </>
         ) : (
           <span style={{ color: '#5c6470' }}>{notice || 'Loading…'}</span>
         )}
         <span style={{ flex: 1 }} />
-        <button style={btn} onClick={() => emit(EVENTS.ENTER_PIN_MODE)}>
-          📌 Comment on element
-        </button>
-        <button
-          style={{ ...btn, marginRight: 0 }}
-          title="Disconnect from sidecar"
+        <Action
+          label="Comment on element"
+          icon={<PinAltIcon />}
+          onClick={() => emit(EVENTS.ENTER_PIN_MODE)}
+        />
+        <Action
+          label="Log out of this sidecar"
+          icon={<PowerIcon />}
           onClick={() => {
             localStorage.removeItem(CONN_KEY);
             setConn(null);
           }}
-        >
-          ⏏
-        </button>
+        />
       </div>
 
       {story && notice ? <p style={{ color: '#dc2626' }}>{notice}</p> : null}
@@ -345,7 +370,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
 addons.register(ADDON_ID, () => {
   addons.add(PANEL_ID, {
     type: types.PANEL,
-    title: 'Review',
+    title: 'Greenroom Review',
     render: ({ active }) => <Panel active={!!active} />,
   });
 });
