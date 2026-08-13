@@ -94,15 +94,42 @@ stale hardcoded id shows up as a named problem instead of a confident wrong verd
 
 - **Story identity across builds.** Records still hang off the story id, which Storybook
   derives from the title. A retitle orphans threads and approvals. See
-  `FINDING-host-story-identity.md`; `exportName` is in the index and is the durable key.
-  The migration harness has to change first — it is SQL-only, and table rebuilds need
-  `foreign_keys=OFF` issued outside the transaction.
+  `FINDING-host-story-identity.md`; `exportName` is in the index and is the durable key —
+  confirmed present on all 639 stories of a real 768-entry build. The migration harness
+  no longer blocks this: function steps, foreign-key discipline and integrity gates
+  landed 2026-08-13.
 - **Launch baselines.** No way yet to mark "this is what shipped" and review the delta.
 - **Batch approve is still a client-side loop** that stops on the first failure. Excluding
   sheets removes the failure we know about; it does not make the operation transactional.
 - **Drafts are in browser memory only.** Any re-render clears typed text, and only one
   pending comment is held at a time.
-- **Selection and "flagged" look identical** — both amber. Selection needs its own
-  colour so "what I'm looking at" and "what has a problem" are not the same signal.
 - **Sheet load time is unmeasured.** Thirty live component trees per page, served with no
   cache headers. Measure before committing to sheet size.
+
+## The panel says the wrong thing when it fails
+
+Found connecting the panel to a deployed sidecar from a real host Storybook, 2026-08-13.
+Each of these is the addon knowing exactly what went wrong and reporting something the
+reader cannot act on. Between them they cost about an hour.
+
+- **`"Failed to fetch"` on connect.** The real cause was a `connect-src 'self'` CSP on the
+  host's Storybook, which no message anywhere named. Catch the TypeError and say so,
+  quoting the sidecar origin to add. Storybook sets no CSP of its own — a build from
+  `examples/demo-storybook` has none — so this comes from whatever the host puts in front
+  of it, and every hardened Storybook will hit it.
+- **A dead token strands the panel.** An expired or revoked token renders
+  `"Authentication required."` forever: the connection is restored from `localStorage`
+  before any request is made, so the connect form never returns. A 401 should clear the
+  stored connection and fall back to the form.
+- **The disconnect control is an `⏏` glyph that renders as a white box** on at least one
+  platform, and is the only route back from the state above. Make it a plain "Log out"
+  text link.
+- **Document the host CSP requirement** wherever connecting the panel is described.
+- **`cors()` runs unconfigured**, so `access-control-allow-origin` is `*` and any origin
+  can call the API. Bearer auth and same-origin cookies mean it is not a live hole, but a
+  configurable allowlist is the right posture for a store holding unreleased client UI.
+
+## Selection colour — resolved
+
+Selection is `#2563eb` (`select.ts`), flagged is `#d4802a` (`preview.ts`). They were
+listed here as identical amber; they are not, and have not been for some time.
