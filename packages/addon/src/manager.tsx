@@ -74,6 +74,11 @@ const STATE_COLOR: Record<StoryState, string> = {
 
 /** The label is the hover tooltip, so it stays the full sentence rather than being
  *  shortened to fit a button. */
+/** Below this the control row cannot hold the pill, the icon buttons and both selects
+ *  on one line, so the selects move to a row of their own. Roughly the width at which
+ *  Storybook's side dock sits; the bottom dock is far wider. */
+const NARROW_PANEL_PX = 560;
+
 const APPROVE = { label: 'Approve', to: 'approved' as StoryState, icon: <CheckIcon /> };
 const REQUEST = {
   label: 'Request changes',
@@ -418,6 +423,29 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const [story, setStory] = useState<(Story & { changedSinceApproval?: boolean }) | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [notice, setNotice] = useState('');
+  /**
+   * Docked to the side the panel is a narrow column and the control row cannot hold the
+   * status pill, seven icon buttons and two selects on one line — the selects wrap
+   * raggedly under the icons, or squeeze until their labels are unreadable. Given their
+   * own row they stay full-width and legible. Along the bottom there is room for
+   * everything on one line, and spending a second row there would be waste.
+   *
+   * Measured off the panel, not the viewport: what changes is where Storybook docked
+   * this panel, which a viewport media query cannot see.
+   */
+  const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    if (!rootEl || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([entry]) => {
+      setNarrow((entry?.contentRect.width ?? 0) < NARROW_PANEL_PX);
+    });
+    ro.observe(rootEl);
+    return () => ro.disconnect();
+    // A callback ref rather than useRef: the panel returns null until it is the active
+    // tab, so a ref object would still be empty when a mount-time effect ran and the
+    // observer would never attach.
+  }, [rootEl]);
   /** The pending "these also changed" offer. Null unless a re-confirmation just
    *  happened and something else in this build is still flagged. */
   const [batch, setBatch] = useState<{ others: Story[]; buildId: string } | null>(null);
@@ -700,11 +728,52 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
     }
   };
 
+  /* What the rail is showing. A toggle only ever announced the state you were about to
+     move to, which reads as a command rather than a filter; a select states where you
+     are. The first option is deliberately labelled by what the store actually returns:
+     on a contact sheet that is the whole page — the sheet plus every tile on it — not
+     one story.
+
+     Defined once and placed in whichever row the panel's width calls for. Duplicating
+     the markup per layout is how two filters drift into disagreeing about their own
+     options. */
+  const selectStyle = {
+    ...inputStyle(theme),
+    width: 'auto',
+    padding: '5px 6px',
+    font: `12px/1.2 ${theme.typography.fonts.base}`,
+  };
+  const filters = (
+    <>
+      <select
+        aria-label="Which comments to show"
+        value={scope}
+        onChange={(e) => setScope(e.target.value as 'story' | 'all')}
+        style={selectStyle}
+      >
+        {selectedRegion ? <option value="item">Current item</option> : null}
+        <option value="story">{sheetOnScreen ? 'This page' : 'This story'}</option>
+        <option value="all">{`All feedback${allCount === null ? '' : ` (${allCount})`}`}</option>
+      </select>
+      <select
+        aria-label="Which comment states to show"
+        value={threadState}
+        onChange={(e) => setThreadState(e.target.value as 'open' | 'resolved' | 'any')}
+        style={selectStyle}
+      >
+        <option value="open">Open</option>
+        <option value="resolved">Resolved</option>
+        <option value="any">Any state</option>
+      </select>
+    </>
+  );
+
   return (
     // The panel is a fixed-height drawer (or a narrow docked column) and the thread list
     // is unbounded — surveying all feedback puts every comment in the review here. Own
     // the scroll rather than letting the content run off the bottom with no way down.
     <div
+      ref={setRootEl}
       style={{
         ...boxStyle(theme),
         height: '100%',
@@ -801,43 +870,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
           onClick={() => setShowStatus((v) => !v)}
         />
         <span style={{ flex: '1 1 0', minWidth: 0 }} />
-        {/* What the rail is showing. A toggle only ever announced the state you were
-            about to move to, which reads as a command rather than a filter; a select
-            states where you are. The first option is deliberately labelled by what the
-            store actually returns: on a contact sheet that is the whole page — the sheet
-            plus every tile on it — not one story. */}
-        <select
-          aria-label="Which comments to show"
-          value={scope}
-          onChange={(e) => setScope(e.target.value as 'story' | 'all')}
-          style={{
-            ...inputStyle(theme),
-            width: 'auto',
-            padding: '5px 6px',
-            font: `12px/1.2 ${theme.typography.fonts.base}`,
-          }}
-        >
-          {selectedRegion ? <option value="item">Current item</option> : null}
-          <option value="story">{sheetOnScreen ? 'This page' : 'This story'}</option>
-          <option value="all">
-            {`All feedback${allCount === null ? '' : ` (${allCount})`}`}
-          </option>
-        </select>
-        <select
-          aria-label="Which comment states to show"
-          value={threadState}
-          onChange={(e) => setThreadState(e.target.value as 'open' | 'resolved' | 'any')}
-          style={{
-            ...inputStyle(theme),
-            width: 'auto',
-            padding: '5px 6px',
-            font: `12px/1.2 ${theme.typography.fonts.base}`,
-          }}
-        >
-          <option value="open">Open</option>
-          <option value="resolved">Resolved</option>
-          <option value="any">Any state</option>
-        </select>
+        {narrow ? null : filters}
         {/* Nothing to log out of when the sidecar is serving this page: there is no
             stored connection, and dropping it would strand a reviewer on a connect
             form asking for a token they were never given. */}
@@ -852,6 +885,23 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
           />
         )}
       </div>
+
+      {narrow ? (
+        <div
+          style={{
+            display: 'flex',
+            gap: 8,
+            marginBottom: 10,
+            minWidth: 0,
+            // The selects share the row rather than sitting at their content width, so
+            // the longest option — "All feedback (37)" — is not the one that gets
+            // truncated first in the column where space is actually short.
+            alignItems: 'center',
+          }}
+        >
+          {filters}
+        </div>
+      ) : null}
 
       {story?.changedSinceApproval ? (
         /* The approval stands — this is a report, not a revocation. Withdrawing a
