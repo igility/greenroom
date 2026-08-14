@@ -456,7 +456,18 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const theme = useTheme();
   /** Story-scoped by default; 'all' surveys the whole review. */
   const [scope, setScope] = useState<'item' | 'story' | 'all'>('story');
-  const [allCount, setAllCount] = useState<number | null>(null);
+  /**
+   * Every thread in the review, regardless of what the list is scoped to.
+   *
+   * The tile paint is a property of the PAGE — "here is the state of everything you can
+   * see" — while the list below is deliberately scoped to one story or one tile. Deriving
+   * the paint from the scoped list tied the two together, so selecting a tile refetched
+   * feedback for that tile alone and every other tile on the sheet lost its colour: the
+   * one moment a reviewer is comparing a component against its neighbours is the moment
+   * the neighbours went blank.
+   */
+  const [allFeedback, setAllFeedback] = useState<FeedbackItem[] | null>(null);
+  const allCount = allFeedback?.length ?? null;
   const [query, setQuery] = useState('');
   /** Which threads to show. Separate from the scope select, because "where to look" and
    *  "what state" are different questions and folding them into one control gives six
@@ -533,7 +544,10 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
 
   const statusMap = useMemo(() => {
     const map: Record<string, { flagged?: boolean; resolved?: boolean; settled?: boolean }> = {};
-    for (const i of feedback) {
+    // Every thread, not the scoped list — see `allFeedback`. Falls back to the scoped
+    // list only before the first full fetch lands, so tiles are never unpainted for
+    // longer than that request takes.
+    for (const i of allFeedback ?? feedback) {
       const id = i.thread.storyId;
       const entry = (map[id] ??= {});
       if (i.thread.state === 'resolved') entry.resolved = entry.resolved ?? true;
@@ -547,7 +561,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
     // comments on it carried no mark at all.
     for (const id of approved) (map[id] ??= {}).settled = true;
     return map;
-  }, [feedback, approved]);
+  }, [allFeedback, feedback, approved]);
 
   useEffect(() => setSelectedRegion(null), [storyId]);
 
@@ -584,12 +598,12 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
       );
     const wanted = scope === 'all' ? client.allFeedback() : client.feedbackForStory(listId);
     wanted.then((r) => live && setFeedback(r.feedback)).catch(() => live && setFeedback([]));
-    // The total is fetched regardless, so the toggle can say how much is out there
-    // rather than making the reviewer switch to find out.
+    // Fetched regardless of scope, for two things that must not depend on it: the
+    // count the scope select shows, and the status paint on the tiles.
     client
       .allFeedback()
-      .then((r) => live && setAllCount(r.feedback.length))
-      .catch(() => live && setAllCount(null));
+      .then((r) => live && setAllFeedback(r.feedback))
+      .catch(() => live && setAllFeedback(null));
     client
       .stories()
       .then(
