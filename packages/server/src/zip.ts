@@ -91,6 +91,8 @@ interface IndexEntry {
 }
 
 export interface IndexedStory {
+  /** The component's own title, without the variant name appended. */
+  componentTitle?: string;
   storyId: string;
   title: string;
   importPath: string;
@@ -123,6 +125,9 @@ export function parseStoryIndex(entries: ZipEntries): IndexedStory[] {
     stories.push({
       storyId,
       title: [entry.title, entry.name].filter(Boolean).join(' / ') || storyId,
+      // The component this variant belongs to, unflattened. The reviewer judges the
+      // component; the variant is which rendition happened to be on screen.
+      componentTitle: entry.title ?? '',
       importPath: entry.importPath ?? '',
       // Storybook carries story tags into index.json, so a sheet declares itself
       // in the build rather than needing a manifest we would have to keep in sync.

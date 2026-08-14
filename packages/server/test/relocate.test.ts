@@ -98,6 +98,10 @@ describe('a data directory that moves', () => {
     first
       .prepare('UPDATE builds SET storage_path = ? WHERE id = ?')
       .run(path.join(original, 'builds', build.id), build.id);
+    // Genuinely restore the v3 shape. Moving user_version alone replays v5 as well,
+    // which then fails on a column that is already there.
+    first.exec('ALTER TABLE stories DROP COLUMN component_title');
+    first.exec('DROP INDEX IF EXISTS idx_stories_import_path');
     first.pragma('user_version = 3');
     first.close();
 
@@ -128,6 +132,8 @@ describe('a data directory that moves', () => {
     const elsewhere = path.join(root, 'somewhere-else');
     fs.cpSync(path.join(dataDir, 'builds', build.id), elsewhere, { recursive: true });
     db.prepare('UPDATE builds SET storage_path = ? WHERE id = ?').run(elsewhere, build.id);
+    db.exec('ALTER TABLE stories DROP COLUMN component_title');
+    db.exec('DROP INDEX IF EXISTS idx_stories_import_path');
     db.pragma('user_version = 3');
     db.close();
 

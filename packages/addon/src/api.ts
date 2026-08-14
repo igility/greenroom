@@ -4,6 +4,9 @@ export interface FeedbackItem {
   thread: {
     id: string;
     storyId: string;
+    /** The surface it was said on — a contact sheet, when the tile clicked belonged to
+     *  another story. Null when the comment was left on the story itself. */
+    seenOnStoryId: string | null;
     buildId: string;
     state: ThreadState;
     pin: { selector: string; x: number; y: number } | null;
@@ -67,6 +70,33 @@ export class Sidecar {
   story(storyId: string) {
     return this.req<{ story: Story }>('GET', `/api/stories/${encodeURIComponent(storyId)}`);
   }
+  /** Every thread in the review, not just the story on screen. Without this a reviewer
+   *  part-way through a few hundred stories has no way to see what they have already
+   *  said — each comment is only visible by navigating back to the story it was left on,
+   *  which requires remembering where that was. */
+  allFeedback() {
+    return this.req<{ feedback: FeedbackItem[] }>('GET', '/api/feedback');
+  }
+
+  /** Every story and its workflow state. The status map is otherwise built purely from
+   *  threads, so approval — the one state a reviewer most wants to see at a glance on a
+   *  sheet — never appeared on a tile at all. */
+  stories() {
+    return this.req<{
+      stories: (Story & { openThreads: number; unresolvedThreads: number })[];
+    }>('GET', '/api/stories');
+  }
+
+  /** Which approvals a new build unsettled, and whether each component's render actually
+   *  changed. Without it the panel can say a story needs re-confirming but not why, which
+   *  reads as the tool having forgotten a decision the reviewer definitely made. */
+  reconfirmQueue() {
+    return this.req<{
+      buildId: string;
+      items: { story: Story; verdict: 'likely_unchanged' | 'changed' | 'unknown' }[];
+    }>('GET', '/api/reconfirm-queue');
+  }
+
   feedbackForStory(storyId: string) {
     return this.req<{ feedback: FeedbackItem[] }>(
       'GET',
@@ -89,6 +119,26 @@ export class Sidecar {
   setThreadState(threadId: string, state: ThreadState) {
     return this.req('POST', `/api/threads/${threadId}/state`, { state });
   }
+  /**
+   * An attachment as an object URL. It cannot be an `<img src>` straight at the API:
+   * the endpoint requires a principal, and an image request carries no Authorization
+   * header. Fetching it through the same path as every other call means it works
+   * whether the panel is authenticated by cookie or by token.
+   *
+   * The caller owns the URL and must revoke it.
+   */
+  async attachmentObjectUrl(id: string): Promise<string> {
+    const res = await fetch(
+      `${this.conn.url.replace(/\/$/, '')}/api/attachments/${encodeURIComponent(id)}`,
+      {
+        credentials: this.sameOrigin ? 'include' : 'omit',
+        headers: this.conn.token ? { authorization: `Bearer ${this.conn.token}` } : {},
+      },
+    );
+    if (!res.ok) throw new Error(`attachment ${id} failed (${res.status})`);
+    return URL.createObjectURL(await res.blob());
+  }
+
   async uploadScreenshot(dataUrl: string): Promise<string> {
     const [meta, b64] = dataUrl.split(',');
     const contentType = meta?.match(/data:([^;]+)/)?.[1] ?? 'image/png';

@@ -167,16 +167,32 @@ describe('a sheet is not a review unit', () => {
     expect(thrown!.reason).toBe('NOT_A_REVIEW_UNIT');
   });
 
-  it('never puts a sheet into the re-confirm queue on a new build', () => {
+  it('leaves an approval alone when a build arrives, and never queues the sheet', () => {
     const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
     store.setStoryState(INPUT, 'approved', admin, { buildId: a.build.id });
 
     store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
 
-    // The approved component correctly needs re-confirmation. The sheet, which was
-    // never approved and cannot be, must not appear as work for the reviewer.
-    expect(store.getStory(INPUT).state).toBe('needs_reconfirm');
+    // A build arriving is not evidence about a component. The reviewer judged the
+    // component, not the bundle it shipped in; anything else in the build — another
+    // component, a dependency, Greenroom's own addon — is none of their business.
+    expect(store.getStory(INPUT).state).toBe('approved');
+    // And the sheet, which was never approved and cannot be, is never work either.
     expect(store.getStory(SHEET).state).toBe('in_review');
+  });
+
+  it('withdraws the approval once the component is seen to have changed', () => {
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
+    store.putRenderReport(INPUT, a.build.id, { hash: 'a'.repeat(32) });
+    store.setStoryState(INPUT, 'approved', admin, { buildId: a.build.id });
+
+    const b = store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
+    expect(store.getStory(INPUT).state).toBe('approved');
+
+    // Rendering it is the evidence. A different hash means the thing they signed off
+    // is not the thing that is there.
+    store.putRenderReport(INPUT, b.build.id, { hash: 'b'.repeat(32) });
+    expect(store.getStory(INPUT).state).toBe('needs_reconfirm');
   });
 });
 

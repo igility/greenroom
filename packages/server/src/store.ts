@@ -11,6 +11,7 @@ import {
   type MessageKind,
   type Pin,
   type Principal,
+  type PrincipalKind,
   type Reviewer,
   type ReviewerRole,
   type RegionFingerprint,
@@ -46,6 +47,10 @@ export interface ReconfirmItem {
   story: Story;
   verdict: FingerprintVerdict;
 }
+
+/** Greenroom itself, for state changes made on evidence rather than by anybody. Never
+ *  attributed to a person or an agent: an export must not imply someone acted. */
+const SYSTEM_PRINCIPAL: Principal = { kind: 'admin', id: 'greenroom', name: 'Greenroom' };
 
 export class Store {
   constructor(
@@ -90,19 +95,27 @@ export class Store {
 
       const getStory = this.db.prepare('SELECT * FROM stories WHERE story_id = ?');
       const insertStory = this.db.prepare(
-        `INSERT INTO stories (story_id, title, import_path, kind, state, anchor_build_id, last_seen_build_id, created_at)
-         VALUES (?, ?, ?, ?, 'in_review', NULL, ?, ?)`,
+        `INSERT INTO stories (story_id, title, component_title, import_path, kind, state, anchor_build_id, last_seen_build_id, created_at)
+         VALUES (?, ?, ?, ?, ?, 'in_review', NULL, ?, ?)`,
       );
       // Kind is refreshed too: adding or removing the sheet tag reclassifies the story
       // on the next upload rather than stranding it in whatever it was first seen as.
       const refreshStory = this.db.prepare(
-        'UPDATE stories SET title = ?, import_path = ?, kind = ?, last_seen_build_id = ? WHERE story_id = ?',
+        'UPDATE stories SET title = ?, component_title = ?, import_path = ?, kind = ?, last_seen_build_id = ? WHERE story_id = ?',
       );
 
       for (const s of stories) {
         const existingStory = getStory.get(s.storyId) as StoryRow | undefined;
         if (!existingStory) {
-          insertStory.run(s.storyId, s.title, s.importPath, s.kind, buildId, at);
+          insertStory.run(
+            s.storyId,
+            s.title,
+            s.componentTitle ?? '',
+            s.importPath,
+            s.kind,
+            buildId,
+            at,
+          );
           this.insertEvent(s.storyId, null, 'in_review', by, {
             buildId,
             note: `First seen in build "${meta.label}".`,
@@ -110,22 +123,31 @@ export class Store {
           newStories++;
           continue;
         }
-        refreshStory.run(s.title, s.importPath, s.kind, buildId, s.storyId);
+        refreshStory.run(s.title, s.componentTitle ?? '', s.importPath, s.kind, buildId, s.storyId);
         // A sheet is not a review unit, so a new build never puts one in the
         // re-confirm queue — its status is a rollup over members that recompute
         // themselves. Without this guard every sheet would land in "needs your
         // attention" on every upload.
         if (s.kind === 'sheet') continue;
-        if (existingStory.state === 'approved' && existingStory.anchor_build_id !== buildId) {
-          this.db
-            .prepare("UPDATE stories SET state = 'needs_reconfirm' WHERE story_id = ?")
-            .run(s.storyId);
-          this.insertEvent(s.storyId, 'approved', 'needs_reconfirm', by, {
-            buildId,
-            note: `Build "${meta.label}" uploaded after approval was pinned to an earlier build.`,
-          });
-          reconfirmed++;
-        }
+        /*
+         * A new build does NOT unsettle an approval. Only a changed render does, and
+         * that is decided later, in putRenderReport, once there is evidence.
+         *
+         * The unit of review is the story, not the build. A reviewer approving a
+         * component is recording a judgement about that component as they saw it —
+         * Greenroom is the notebook, not the subject. Unsettling on build identity meant
+         * anything at all shipping in the bundle revoked their decision: a change to
+         * another component, a dependency bump, or Greenroom's own addon being rebuilt.
+         * None of those alter the thing they looked at, and no reviewer can construct a
+         * reason why they should. Asked to re-affirm hundreds of untouched components,
+         * they stop looking — which manufactures exactly the hollow approvals that
+         * pinning to a build was meant to prevent.
+         *
+         * Supersedes the 2026-08-11 ratification ("new build → needs_reconfirm").
+         * What that decision was protecting — never showing a sign-off for markup nobody
+         * signed off — is now enforced where the evidence actually lives: a story whose
+         * render hash differs from the one at its anchor is demoted on sight.
+         */
       }
     })();
 
@@ -183,7 +205,7 @@ export class Store {
    */
   listStories(
     filter: { state?: StoryState; kind?: StoryKind } = {},
-  ): (Story & { openThreads: number })[] {
+  ): (Story & { openThreads: number; unresolvedThreads: number })[] {
     const where: string[] = [];
     const params: string[] = [];
     if (filter.state) {
@@ -204,6 +226,13 @@ export class Store {
     // has commented on twelve times as having nothing on it — and send them hunting
     // through the component list for their own words, which is the problem contact
     // sheets exist to remove.
+    // Distinct from openThreads on purpose. `open` drives the reviewer's attention
+    // badge; `unresolved` is what blocks approval, and it includes threads an agent has
+    // marked addressed but nobody has accepted. Collapsing the two would either inflate
+    // the badge or let a sign-off through over an unaccepted fix.
+    const unresolvedCount = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM threads WHERE story_id = ? AND state != 'resolved'",
+    );
     const openRollup = this.db.prepare(
       `SELECT COUNT(*) AS n FROM threads WHERE state = 'open'
          AND (story_id = ? OR seen_on_story_id = ? OR story_id IN
@@ -215,7 +244,11 @@ export class Store {
         story.kind === 'sheet'
           ? (openRollup.get(r.story_id, r.story_id, r.story_id) as { n: number })
           : (openCount.get(r.story_id) as { n: number });
-      return { ...story, openThreads: counter.n };
+      return {
+        ...story,
+        openThreads: counter.n,
+        unresolvedThreads: (unresolvedCount.get(r.story_id) as { n: number }).n,
+      };
     });
   }
 
@@ -279,20 +312,55 @@ export class Store {
           'STALE_BUILD',
         );
       }
+      // An unresolved thread is an objection that has not been answered. Signing off
+      // over the top of one produces a green story with an open complaint attached to
+      // it — the audit trail then says approved while the review says otherwise, and
+      // whoever raised it has no way to know their point was passed over. Resolving is
+      // cheap and deliberate; approving around it must not be possible, from the panel,
+      // the shell, or an agent.
+      // Across the whole component: an unanswered objection about any variant is an
+      // unanswered objection about the thing being signed off.
+      const members = this.componentStories(story);
+      const placeholders = members.map(() => '?').join(',');
+      const open = this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM threads WHERE state != 'resolved' AND story_id IN (${placeholders})`,
+        )
+        .get(...members.map((m) => m.storyId)) as { n: number };
+      if (open.n > 0) {
+        throw new HttpError(
+          409,
+          `"${this.componentLabel(story)}" has ${open.n} unresolved comment${open.n === 1 ? '' : 's'} — resolve ${open.n === 1 ? 'it' : 'them'} before approving.`,
+          'OPEN_THREADS',
+        );
+      }
+
       approvalMode = by.kind === 'agent' ? 'delegated' : 'direct';
       if (approvalMode === 'delegated') delegationId = this.activeDelegation()!.id;
     }
 
+    // The decision covers the component, so it is written across every variant of it,
+    // in one transaction. Each variant still gets its own audit row — the trail stays
+    // answerable per story — carrying a note that names what was actually reviewed and
+    // how many renditions the decision covered.
+    const members = this.componentStories(story);
+    const scope =
+      members.length > 1
+        ? `Reviewed as component "${this.componentLabel(story)}" (${members.length} variants).`
+        : undefined;
     this.db.transaction(() => {
-      this.db
-        .prepare('UPDATE stories SET state = ?, anchor_build_id = ? WHERE story_id = ?')
-        .run(to, to === 'approved' ? buildId : story.anchorBuildId, storyId);
-      this.insertEvent(storyId, story.state, to, by, {
-        buildId,
-        note: opts.note,
-        approvalMode,
-        delegationId,
-      });
+      for (const m of members) {
+        if (m.state === to) continue;
+        this.db
+          .prepare('UPDATE stories SET state = ?, anchor_build_id = ? WHERE story_id = ?')
+          .run(to, to === 'approved' ? buildId : m.anchorBuildId, m.storyId);
+        this.insertEvent(m.storyId, m.state, to, by, {
+          buildId,
+          note: [opts.note, scope].filter(Boolean).join(' ') || undefined,
+          approvalMode,
+          delegationId,
+        });
+      }
     })();
 
     return this.getStory(storyId);
@@ -588,7 +656,122 @@ export class Store {
       regions.forEach((r, i) => insert.run(storyId, r.regionKey, buildId, i, at));
     })();
 
+    this.reconcileApproval(storyId, buildId);
     return { recorded: regions.length, unresolved };
+  }
+
+  /**
+   * Give an approval back when the new build renders exactly what was approved.
+   *
+   * A new upload unsettles every approval, because at upload time nothing has rendered
+   * yet and there is no evidence either way. That default is right. What was wrong was
+   * leaving it there: a reviewer who signed off a component and is then asked to sign it
+   * off again — with the render byte-identical — has no way to make sense of the request,
+   * and a reviewer asked to do that a few hundred times stops looking. Fatigue
+   * manufactures exactly the false greens the unsettling was meant to prevent, just via a
+   * bored human instead of a bad hash.
+   *
+   * So the fingerprint is evidence that RESTORES, never evidence that assumes: unsettle
+   * first, and hand the approval back only once this build has actually been rendered and
+   * hashed to the same value. It is recorded as `carried`, attributed to whoever gave the
+   * original sign-off, so an export can always separate "a person looked at this build"
+   * from "a person looked at an identical one".
+   */
+
+  /**
+   * The stories that make up one component — the CSF file's whole export set.
+   *
+   * The review unit is the component, because that is what a reviewer looks at and
+   * decides about. A contact sheet tile is labelled "SideNav" and renders a bespoke
+   * composition; the story id behind it is a stand-in picked to satisfy an API. Filing
+   * their decision against that one variant recorded a judgement about `Grouped` that
+   * nobody made, and left `Flat` and `Collapsed` unreviewed forever.
+   *
+   * Verified 1:1 with title on a real 639-story build: 186 files, 186 titles, no file
+   * carrying two titles and no title spanning two files.
+   */
+  private componentStories(story: Story): Story[] {
+    if (story.kind === 'sheet' || !story.importPath) return [story];
+    const rows = this.db
+      .prepare("SELECT * FROM stories WHERE import_path = ? AND kind != 'sheet' ORDER BY story_id")
+      .all(story.importPath) as StoryRow[];
+    return rows.length ? rows.map(rowToStory) : [story];
+  }
+
+  /** What to call the thing being approved, in a sentence a reviewer would recognise. */
+  private componentLabel(story: Story): string {
+    return story.componentTitle || story.title;
+  }
+
+  private reconcileApproval(storyId: string, buildId: string) {
+    const story = this.getStory(storyId);
+    if (story.kind === 'sheet') return;
+    if (!story.anchorBuildId || story.anchorBuildId === buildId) return;
+
+    const fp = this.db.prepare(
+      'SELECT hash FROM fingerprints WHERE story_id = ? AND build_id = ? AND region_key = ?',
+    );
+    const current = fp.get(storyId, buildId, ROOT_REGION) as { hash: string } | undefined;
+    const anchor = fp.get(storyId, story.anchorBuildId, ROOT_REGION) as { hash: string } | undefined;
+    if (!current || !anchor) return;
+
+    // The render moved under an approval: the sign-off no longer describes what is
+    // there, so it is withdrawn on sight. This is where "no false greens" is enforced —
+    // on evidence about the story, not on the arrival of a build.
+    if (story.state === 'approved' && current.hash !== anchor.hash) {
+      // One variant moving means the component moved. The approval covered the
+      // component, so it is withdrawn from the component — leaving siblings green
+      // because they happen not to have rendered yet would be a sign-off for a
+      // component the reviewer would no longer recognise.
+      const members = this.componentStories(story).filter((m) => m.state === 'approved');
+      this.db.transaction(() => {
+        for (const m of members) {
+          this.db
+            .prepare("UPDATE stories SET state = 'needs_reconfirm' WHERE story_id = ?")
+            .run(m.storyId);
+          this.insertEvent(m.storyId, 'approved', 'needs_reconfirm', SYSTEM_PRINCIPAL, {
+            buildId,
+            note:
+              m.storyId === storyId
+                ? `Render changed since the approved build ${story.anchorBuildId}.`
+                : `"${story.title}" changed, and this is part of the same component.`,
+          });
+        }
+      })();
+      return;
+    }
+
+    if (story.state !== 'needs_reconfirm') return;
+    if (current.hash !== anchor.hash) return;
+
+    // Whose sign-off is being carried. Attributing it to nobody would leave an approval
+    // with no author; attributing it to a fresh principal would invent one.
+    const origin = this.db
+      .prepare(
+        `SELECT principal_kind, principal_id, principal_name FROM status_events
+          WHERE story_id = ? AND to_state = 'approved'
+          ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(storyId) as
+      | { principal_kind: PrincipalKind; principal_id: string; principal_name: string }
+      | undefined;
+    if (!origin) return;
+
+    const by: Principal = {
+      kind: origin.principal_kind,
+      id: origin.principal_id,
+      name: origin.principal_name,
+    };
+    this.db.transaction(() => {
+      this.db
+        .prepare("UPDATE stories SET state = 'approved', anchor_build_id = ? WHERE story_id = ?")
+        .run(buildId, storyId);
+      this.insertEvent(storyId, 'needs_reconfirm', 'approved', by, {
+        buildId,
+        approvalMode: 'carried',
+        note: `Carried from build ${story.anchorBuildId} — render identical.`,
+      });
+    })();
   }
 
   private writeFingerprint(
@@ -904,6 +1087,7 @@ interface BuildRow {
 interface StoryRow {
   story_id: string;
   title: string;
+  component_title: string;
   import_path: string;
   /** Absent on rows read back by pre-v2 code paths in tests; defaults to 'story'. */
   kind: string | null;
@@ -1006,6 +1190,7 @@ const rowToBuild = (r: BuildRow): Build => ({
 const rowToStory = (r: StoryRow): Story => ({
   storyId: r.story_id,
   title: r.title,
+  componentTitle: r.component_title ?? '',
   importPath: r.import_path,
   kind: (r.kind ?? 'story') as StoryKind,
   state: r.state as StoryState,

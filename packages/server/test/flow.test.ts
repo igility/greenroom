@@ -158,6 +158,29 @@ describe('review cycle end to end', () => {
     expect(reply.message.kind).toBe('agent_note');
   });
 
+  it('refuses approval while a comment on the story is unresolved', async () => {
+    // An unresolved thread is an objection nobody has answered. Approving over it would
+    // write a green sign-off with an open complaint still attached, and the audit trail
+    // would say approved while the review said otherwise.
+    const refused = await app.request('/api/stories/components-button--primary/status', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie, ...json },
+      body: JSON.stringify({ to: 'approved', buildId: buildA }),
+    });
+    expect(refused.status).toBe(409);
+    const body = await refused.json();
+    expect(body.reason).toBe('OPEN_THREADS');
+    expect(body.error).toMatch(/unresolved comment/);
+
+    // Still in review — a refused approval must not half-apply.
+    const after = await (
+      await app.request('/api/stories/components-button--primary', {
+        headers: { cookie: reviewerCookie },
+      })
+    ).json();
+    expect(after.story.state).not.toBe('approved');
+  });
+
   it('walks changes_requested → addressed → approved', async () => {
     const cr = await app.request('/api/stories/components-button--primary/status', {
       method: 'POST',
@@ -173,6 +196,15 @@ describe('review cycle end to end', () => {
     });
     expect(addressed.status).toBe(200);
 
+    // Accepting the fix is an explicit act: the reviewer resolves the thread they raised,
+    // and only then can the story be signed off.
+    const resolved = await app.request(`/api/threads/${threadId}/state`, {
+      method: 'POST',
+      headers: { cookie: reviewerCookie, ...json },
+      body: JSON.stringify({ state: 'resolved' }),
+    });
+    expect(resolved.status).toBe(200);
+
     for (const storyId of ['components-button--primary', 'components-badge--success']) {
       const approve = await app.request(`/api/stories/${storyId}/status`, {
         method: 'POST',
@@ -186,7 +218,7 @@ describe('review cycle end to end', () => {
     }
   });
 
-  it('flips approvals to needs_reconfirm when build B arrives', async () => {
+  it('accepts build B without disturbing anybody’s approvals', async () => {
     const res = await app.request('/api/builds?label=design-v2', {
       method: 'POST',
       headers: { ...asAdmin, 'content-type': 'application/zip' },
@@ -194,33 +226,62 @@ describe('review cycle end to end', () => {
     });
     const out = await res.json();
     expect(out.created).toBe(true);
-    expect(out.reconfirmed).toBe(2);
+    // Uploading is not evidence about any component. Nothing is unsettled until a
+    // render actually shows a difference.
+    expect(out.reconfirmed).toBe(0);
     buildB = out.build.id;
+
+    const still = await (
+      await app.request('/api/stories/components-button--primary', {
+        headers: { cookie: reviewerCookie },
+      })
+    ).json();
+    expect(still.story.state).toBe('approved');
   });
 
-  it('sorts the reconfirm queue by fingerprint verdict, changed first', async () => {
+  it('leaves an unchanged component approved, and unsettles only what moved', async () => {
     const put = (storyId: string, buildId: string, hash: string) =>
       app.request('/api/fingerprints', {
         method: 'PUT',
         headers: { cookie: reviewerCookie, ...json },
         body: JSON.stringify({ storyId, buildId, hash: hash.repeat(8) }),
       });
+    // Same render across both builds. Nobody is asked to re-affirm anything.
     await put('components-button--primary', buildA, 'aaaaaaaa');
     await put('components-button--primary', buildB, 'aaaaaaaa');
+    // Genuinely different: this is the one worth their attention.
     await put('components-badge--success', buildA, 'bbbbbbbb');
     await put('components-badge--success', buildB, 'cccccccc');
+
+    const untouched = await (
+      await app.request('/api/stories/components-button--primary', {
+        headers: { cookie: reviewerCookie },
+      })
+    ).json();
+    expect(untouched.story.state).toBe('approved');
+    // Still pinned to the build a person actually looked at. Advancing it to B would
+    // let the anchor name a build nobody reviewed.
+    expect(untouched.story.anchorBuildId).toBe(buildA);
+
+    const moved = await (
+      await app.request('/api/stories/components-badge--success', {
+        headers: { cookie: reviewerCookie },
+      })
+    ).json();
+    expect(moved.story.state).toBe('needs_reconfirm');
 
     const queue = await (
       await app.request(`/api/reconfirm-queue?buildId=${buildB}`, { headers: asAdmin })
     ).json();
-    expect(queue.items).toHaveLength(2);
+    expect(queue.items).toHaveLength(1);
     expect(queue.items[0].story.storyId).toBe('components-badge--success');
     expect(queue.items[0].verdict).toBe('changed');
-    expect(queue.items[1].verdict).toBe('likely_unchanged');
   });
 
   it('blocks agent approval without a delegation, with the warning', async () => {
-    const res = await app.request('/api/stories/components-button--primary/status', {
+    // Uses the story that genuinely changed, since the unchanged one has been handed
+    // back to approved and is no longer awaiting anybody's decision.
+    const res = await app.request('/api/stories/components-badge--success/status', {
       method: 'POST',
       headers: { authorization: `Bearer ${agentToken}`, ...json },
       body: JSON.stringify({ to: 'approved', buildId: buildB }),
@@ -232,6 +293,8 @@ describe('review cycle end to end', () => {
   });
 
   it('allows agent approval under a recorded delegation, audit-labeled delegated', async () => {
+    // The story that genuinely changed: the unchanged one carried its approval forward
+    // and is no longer anybody's to decide.
     await app.request('/api/delegations', {
       method: 'POST',
       headers: { ...asAdmin, ...json },
@@ -240,7 +303,7 @@ describe('review cycle end to end', () => {
       }),
     });
 
-    const res = await app.request('/api/stories/components-button--primary/status', {
+    const res = await app.request('/api/stories/components-badge--success/status', {
       method: 'POST',
       headers: { authorization: `Bearer ${agentToken}`, ...json },
       body: JSON.stringify({ to: 'approved', buildId: buildB }),

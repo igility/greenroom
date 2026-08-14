@@ -231,6 +231,23 @@ const MIGRATIONS: Migration[] = [
   UPDATE builds SET storage_path = 'builds/' || id
    WHERE storage_path LIKE '%/builds/' || id;
   `,
+
+  // v5 — the review unit is the component, not the story variant.
+  `
+  -- A reviewer looking at a contact sheet judges "SideNav", not "SideNav / Grouped".
+  -- The tile is labelled with the component, and what it renders is usually a bespoke
+  -- composition rather than any one story. Filing that decision against whichever
+  -- variant the tile happened to name recorded a judgement nobody made, and left the
+  -- component's other variants unreviewed forever — 277 of them in the reference
+  -- Storybook, in a queue no one will ever walk.
+  --
+  -- The component is the CSF file: verified 1:1 with title across a real 639-story
+  -- build (186 files, 186 titles, no file with two titles, no title across two files).
+  -- import_path is therefore the grouping key and needs no new column; this stores the
+  -- component's own title for display, since stories.title carries the variant appended.
+  ALTER TABLE stories ADD COLUMN component_title TEXT NOT NULL DEFAULT '';
+  CREATE INDEX idx_stories_import_path ON stories(import_path);
+  `,
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the

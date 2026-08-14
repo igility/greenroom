@@ -10,6 +10,9 @@ export const EVENTS = {
   CANCEL_PIN_MODE: `${ADDON_ID}/cancel-pin-mode`,
   PIN_CAPTURED: `${ADDON_ID}/pin-captured`,
   FINGERPRINT: `${ADDON_ID}/fingerprint`,
+  STATUS_MAP: `${ADDON_ID}/status-map`,
+  REVEAL_REGION: `${ADDON_ID}/reveal-region`,
+  REGION_SELECTED: `${ADDON_ID}/region-selected`,
 } as const;
 
 /** postMessage types (reviewer shell ↔ story iframe, review mode). */
@@ -20,6 +23,7 @@ export const MSG = {
   FINGERPRINT: 'greenroom:fingerprint',
   STATUS_MAP: 'greenroom:status-map',
   REGION_SELECTED: 'greenroom:region-selected',
+  REVEAL_REGION: 'greenroom:reveal-region',
 } as const;
 
 /** The single injected stylesheet that paints review status onto declared regions. */
@@ -28,10 +32,17 @@ export const STATUS_STYLE_ID = 'greenroom-status-style';
 /** Separate sheet for the transient hover outline, so it never clobbers status paint. */
 export const HOVER_STYLE_ID = 'greenroom-hover-style';
 
+/** Separate sheet again for the throb that answers "where is the thing I just clicked".
+ *  Kept apart from status paint so revealing works whether or not status is switched on,
+ *  and so it can expire without disturbing what the reviewer chose to leave showing. */
+export const REVEAL_STYLE_ID = 'greenroom-reveal-style';
+
 /** Per-region review status, sent by the shell so tiles can show where they stand. */
 export interface RegionStatus {
   /** Any open comment on this component, wherever it was raised. */
   flagged?: boolean;
+  /** Every comment on it has been resolved. */
+  resolved?: boolean;
   /** Settled: approved, and unchanged since. */
   settled?: boolean;
 }

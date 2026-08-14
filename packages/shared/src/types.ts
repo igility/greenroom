@@ -15,7 +15,13 @@ export type MessageKind = 'comment' | 'agent_note' | 'status_change';
 
 /** How an approval was granted: a direct human action, or an agent acting under a
  * recorded human delegation. Delegated approvals are always audit-labeled. */
-export type ApprovalMode = 'direct' | 'delegated';
+/** How an approval came about.
+ *  - `direct`    a human approved it against the build they were looking at
+ *  - `delegated` an agent approved it under a recorded written authorisation
+ *  - `carried`   a human's earlier approval was carried onto a later build whose render
+ *                is byte-identical. Never a new sign-off: the audit keeps it distinct so
+ *                an export can always answer "did a person look at THIS build". */
+export type ApprovalMode = 'direct' | 'delegated' | 'carried';
 
 export type FingerprintVerdict = 'likely_unchanged' | 'changed' | 'unknown';
 
@@ -50,8 +56,12 @@ export type StoryKind = 'story' | 'sheet';
 export interface Story {
   /** Storybook story id, e.g. `components-button--primary`. */
   storyId: string;
+  /** Title with the variant appended: "Components/Navigation/SideNav / Grouped". */
   title: string;
-  /** CSF file path from the build's index.json — how agents find the source. */
+  /** The component this variant belongs to — the unit a reviewer actually judges. */
+  componentTitle: string;
+  /** CSF file path from the build's index.json — how agents find the source, and the
+   *  key that groups a component's variants together. */
   importPath: string;
   kind: StoryKind;
   state: StoryState;
