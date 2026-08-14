@@ -40,6 +40,40 @@ export function regionOf(el: Element): HTMLElement | null {
 }
 
 /** Every declared region inside a rendered story, in document order. */
+/**
+ * What the screenshot should actually show.
+ *
+ * A declared tile when the click landed in one. Otherwise the element clicked — not the
+ * whole story root, which is what this used to fall back to. On any page that is not a
+ * contact sheet, that fallback produced a picture of the entire page: on a style tile or
+ * a long layout the thing being discussed is a few unreadable pixels somewhere in it, and
+ * the reviewer's own comment stops being evidence of anything.
+ *
+ * A clicked element can be smaller than its own meaning — a label, an icon, a single
+ * character of help text — so climb until the frame is big enough to recognise. The
+ * thresholds are deliberately small: the point is to include enough context to identify
+ * the thing, not to widen back out to the page.
+ */
+const MIN_SHOT_W = 96;
+const MIN_SHOT_H = 48;
+
+export function shotElement(
+  el: Element | null,
+  region: HTMLElement | null,
+  root: HTMLElement | null,
+): HTMLElement | null {
+  if (region) return region;
+  if (!(el instanceof HTMLElement)) return root;
+  let node: HTMLElement | null = el;
+  while (node && node !== root) {
+    const rect = node.getBoundingClientRect();
+    if (rect.width >= MIN_SHOT_W && rect.height >= MIN_SHOT_H) return node;
+    if (!node.parentElement) break;
+    node = node.parentElement;
+  }
+  return node ?? root;
+}
+
 export function regionsIn(root: ParentNode): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(TILE_SELECTOR));
 }
@@ -123,7 +157,7 @@ export function enterPinMode(onCapture: (c: Capture) => void, onCancel?: () => v
     const keptPaint = paint?.textContent ?? null;
     if (paint) paint.textContent = '';
 
-    const shotTarget = portalCaptured ? null : (region ?? root ?? document.body);
+    const shotTarget = portalCaptured ? null : shotElement(el, region, root);
     let screenshotDataUrl: string | null = null;
     if (shotTarget) {
       try {

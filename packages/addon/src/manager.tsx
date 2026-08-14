@@ -165,11 +165,13 @@ const ConnectForm: React.FC<{ defaultUrl: string; onConnect: (c: Conn) => void }
   );
 };
 
-const Thread: React.FC<{ item: FeedbackItem; client: Sidecar; onChanged: () => void }> = ({
-  item,
-  client,
-  onChanged,
-}) => {
+const Thread: React.FC<{
+  item: FeedbackItem;
+  client: Sidecar;
+  onChanged: () => void;
+  /** The story being looked at, so a thread about a different one can say which. */
+  viewingStoryId?: string;
+}> = ({ item, client, onChanged, viewingStoryId }) => {
   const [reply, setReply] = useState('');
   const send = async () => {
     if (!reply.trim()) return;
@@ -187,12 +189,24 @@ const Thread: React.FC<{ item: FeedbackItem; client: Sidecar; onChanged: () => v
         marginBottom: 10,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-        <span style={{ fontWeight: 600 }}>
+      {/* The CSS selector is how the pin is anchored, not what the comment is about, and
+          it used to be the headline: two wrapped lines of `div:nth-of-type(4) > …` in
+          front of a reviewer who has no use for it. It stays on the title attribute for
+          anyone debugging an anchor. What leads is what was said and where. */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontWeight: 600 }} title={item.thread.pin?.selector ?? undefined}>
           {item.thread.state === 'open' ? '● ' : item.thread.state === 'addressed' ? '◐ ' : '○ '}
-          {item.thread.pin ? <code style={{ fontSize: 11 }}>{item.thread.pin.selector}</code> : 'General'}
+          {item.thread.pin ? 'Pinned comment' : 'General comment'}
+          {item.story.storyId !== viewingStoryId ? (
+            <span style={{ fontWeight: 400, color: theme.textMutedColor }}>
+              {' · on '}
+              {item.story.title}
+            </span>
+          ) : null}
         </span>
-        <span style={{ color: theme.textMutedColor, fontSize: 11 }}>{item.thread.state}</span>
+        <span style={{ color: theme.textMutedColor, fontSize: 11, whiteSpace: 'nowrap' }}>
+          {item.thread.state}
+        </span>
       </div>
       {item.messages.map((m) => (
         <p key={m.id} style={{ margin: '4px 0' }}>
@@ -349,7 +363,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             ))}
           </>
         ) : (
-          <span style={{ color: '#5c6470' }}>{notice || 'Loading…'}</span>
+          <span style={{ color: theme.textMutedColor }}>{notice || 'Loading…'}</span>
         )}
         {/* Kept with the other controls, not pushed to the far edge by a flex spacer.
             On a wide window that put the panel's primary action a thousand pixels from
@@ -376,12 +390,28 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         )}
       </div>
 
-      {story && notice ? <p style={{ color: '#dc2626' }}>{notice}</p> : null}
+      {story && notice ? <p style={{ color: theme.color.negative }}>{notice}</p> : null}
 
       {pending ? (
-        <div style={{ border: '2px solid #2563eb', borderRadius: 8, padding: 10, marginBottom: 12 }}>
-          <p style={{ margin: '0 0 6px', fontWeight: 600 }}>
-            New comment on <code style={{ fontSize: 11 }}>{pending.pin.selector}</code>
+        <div
+          style={{
+            border: `2px solid ${theme.color.secondary}`,
+            borderRadius: theme.appBorderRadius,
+            padding: 10,
+            marginBottom: 12,
+          }}
+        >
+          {/* The picture below is the subject; the selector is plumbing. Naming the tile
+              when there is one tells the reviewer where this will be filed, which is the
+              only part of the routing they benefit from seeing. */}
+          <p style={{ margin: '0 0 6px', fontWeight: 600 }} title={pending.pin.selector}>
+            New comment
+            {pending.regionStoryId ? (
+              <span style={{ fontWeight: 400, color: theme.textMutedColor }}>
+                {' · on '}
+                {pending.regionStoryId}
+              </span>
+            ) : null}
           </p>
           {pending.screenshotDataUrl ? (
             <img
@@ -409,10 +439,16 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
 
       {feedback.length ? (
         feedback.map((item) => (
-          <Thread key={item.thread.id} item={item} client={client} onChanged={refresh} />
+          <Thread
+            key={item.thread.id}
+            item={item}
+            client={client}
+            onChanged={refresh}
+            viewingStoryId={storyId}
+          />
         ))
       ) : (
-        <p style={{ color: '#5c6470' }}>No feedback threads on this story yet.</p>
+        <p style={{ color: theme.textMutedColor }}>No feedback threads on this story yet.</p>
       )}
     </div>
   );
@@ -421,7 +457,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
 addons.register(ADDON_ID, () => {
   addons.add(PANEL_ID, {
     type: types.PANEL,
-    title: 'Greenroom Review',
+    title: 'Greenroom',
     render: ({ active }) => <Panel active={!!active} />,
   });
 });
