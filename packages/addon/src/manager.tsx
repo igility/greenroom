@@ -311,10 +311,10 @@ const Thread: React.FC<{
                     textDecoration: 'underline',
                   }}
                 >
-                  {item.story.title}
+                  {item.story.componentTitle || item.story.title}
                 </button>
               ) : (
-                item.story.title
+                item.story.componentTitle || item.story.title
               )}
             </span>
           ) : null}
@@ -425,6 +425,9 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const [verdicts, setVerdicts] = useState<Map<string, 'likely_unchanged' | 'changed' | 'unknown'>>(
     new Map(),
   );
+  /** How many renditions each component has, keyed by its CSF file. Approving covers all
+   *  of them, so the count is disclosed rather than left for the reviewer to discover. */
+  const [variantsByFile, setVariantsByFile] = useState<Map<string, number>>(new Map());
   /** Pin mode is armed in the preview, but the reviewer armed it from a button in the
    *  manager — so that is where their focus is, and where Escape lands. The preview's own
    *  Escape listener is on the iframe's window and never sees it. */
@@ -464,6 +467,12 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   /** Status is derived from the threads already loaded, so it costs no extra request and
    *  cannot disagree with the list the reviewer is reading. Sent empty when switched off,
    *  which clears the paint rather than leaving a stale coat of it behind. */
+  /** What the reviewer is judging. Approval moves the whole component, so naming the
+   *  variant would describe something narrower than what the button does — the same
+   *  mismatch as a control labelled "This page" while showing one tile. */
+  const subjectName = story?.componentTitle || story?.title || '';
+  const variantCount = story?.importPath ? (variantsByFile.get(story.importPath) ?? 1) : 1;
+
   /** Whether the page on screen is a survey page — asked of the story, not of the
    *  selected tile, so the option keeps saying "This page" while a tile is selected. */
   const sheetOnScreen = story?.kind === 'sheet' || !!selectedRegion;
@@ -537,6 +546,12 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             new Map(
               r.stories.filter((x) => x.unresolvedThreads > 0).map((x) => [x.storyId, x.unresolvedThreads]),
             ),
+          ),
+          setVariantsByFile(
+            r.stories.reduce((m, x) => {
+              if (x.kind !== 'sheet' && x.importPath) m.set(x.importPath, (m.get(x.importPath) ?? 0) + 1);
+              return m;
+            }, new Map<string, number>()),
           )),
       )
       .catch(() => undefined);
@@ -792,7 +807,12 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             overflowWrap: 'anywhere',
           }}
         >
-          Reviewing <strong style={{ color: theme.color.defaultText }}>{story.title}</strong>
+          Reviewing <strong style={{ color: theme.color.defaultText }}>{subjectName}</strong>
+          {variantCount > 1 ? (
+            <span title="Approving covers every variant of this component">
+              {` · ${variantCount} variants`}
+            </span>
+          ) : null}
           {' · '}
           <button
             type="button"

@@ -19,7 +19,15 @@ export type DB = Database.Database;
  * an `async` step typechecks — so the runner rejects one at execution time instead. Read
  * files with the synchronous `fs` calls.
  */
-export type Migration = string | ((db: DB) => void);
+/** What a function step is told about where this database lives. A backfill that has to
+ *  re-read stored build output needs the data directory: `builds.storage_path` is
+ *  recorded relative to it, so the handle alone cannot find anything on disk. */
+export interface MigrationContext {
+  /** Absolute path to the data directory, or null for an in-memory database. */
+  dataDir: string | null;
+}
+
+export type Migration = string | ((db: DB, ctx: MigrationContext) => void);
 
 const MIGRATIONS: Migration[] = [
   // v1 — initial schema
@@ -248,6 +256,43 @@ const MIGRATIONS: Migration[] = [
   ALTER TABLE stories ADD COLUMN component_title TEXT NOT NULL DEFAULT '';
   CREATE INDEX idx_stories_import_path ON stories(import_path);
   `,
+
+  /*
+   * v6 — backfill the component each existing story belongs to.
+   *
+   * v5 added the column with an empty default, which leaves every story already in the
+   * store unable to say what component it is part of. Re-uploading does not fix it: an
+   * identical build is deduplicated by manifest hash and never re-ingested, so rows
+   * created before v5 would stay blank until the host happened to ship a change.
+   *
+   * The answer is not derivable from what is already in the database. `stories.title`
+   * is the component and the variant joined with " / ", and splitting on the last
+   * separator is a guess that a story named "Loading / Empty" would silently break. The
+   * component's own title is sitting in the build's index.json, which is on disk — so
+   * this reads it, which is the whole reason function migrations exist.
+   */
+  (db, ctx) => {
+    if (!ctx.dataDir) return; // in-memory: nothing was ever ingested
+    const builds = db
+      .prepare('SELECT id, storage_path FROM builds ORDER BY created_at DESC')
+      .all() as { id: string; storage_path: string }[];
+    const set = db.prepare(
+      "UPDATE stories SET component_title = ? WHERE story_id = ? AND component_title = ''",
+    );
+    for (const build of builds) {
+      const indexPath = path.resolve(ctx.dataDir, build.storage_path, 'index.json');
+      if (!fs.existsSync(indexPath)) continue;
+      let index: { entries?: Record<string, { title?: string }> };
+      try {
+        index = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as typeof index;
+      } catch {
+        continue; // a build whose index we cannot read teaches us nothing; try the next
+      }
+      for (const [storyId, entry] of Object.entries(index.entries ?? {})) {
+        if (entry?.title) set.run(entry.title, storyId);
+      }
+    }
+  },
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the
@@ -259,7 +304,7 @@ export function openDb(dataDir: string): DB {
   const db = new Database(path.join(dataDir, 'greenroom.db'));
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
-  migrate(db);
+  migrate(db, MIGRATIONS, { dataDir });
   return db;
 }
 
@@ -278,7 +323,11 @@ export function openMemoryDb(): DB {
  * `migrations` is a parameter so the harness itself can be tested against synthetic
  * steps. Production callers take the default.
  */
-export function migrate(db: DB, migrations: readonly Migration[] = MIGRATIONS): void {
+export function migrate(
+  db: DB,
+  migrations: readonly Migration[] = MIGRATIONS,
+  ctx: MigrationContext = { dataDir: null },
+): void {
   // A database written by a newer Greenroom than this one. The loop below would simply
   // not run, and the server would come up and start writing against a schema whose
   // shape it does not know — worse than refusing to start.
@@ -347,7 +396,7 @@ export function migrate(db: DB, migrations: readonly Migration[] = MIGRATIONS): 
             if (typeof step === 'string') {
               db.exec(step);
             } else {
-              const returned = step(db);
+              const returned = step(db, ctx);
               if (returned !== undefined) throw new Error(ASYNC_STEP);
             }
             assertSchemaIntact(db);

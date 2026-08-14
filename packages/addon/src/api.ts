@@ -14,7 +14,15 @@ export interface FeedbackItem {
     createdBy: { kind: string; name: string };
     createdAt: string;
   };
-  story: { storyId: string; title: string; importPath: string; state: StoryState };
+  story: {
+    storyId: string;
+    /** Variant title, e.g. "Components/Navigation/SideNav / Grouped". */
+    title: string;
+    /** The component — what the reviewer recognises and what approval now moves. */
+    componentTitle: string;
+    importPath: string;
+    state: StoryState;
+  };
   messages: { id: string; author: { kind: string; name: string }; kind: string; body: string; createdAt: string }[];
 }
 
