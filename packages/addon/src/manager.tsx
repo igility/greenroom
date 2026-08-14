@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { addons, types, useChannel, useParameter, useStorybookApi } from 'storybook/manager-api';
-import { IconButton, TooltipNote, WithTooltip } from 'storybook/internal/components';
+import { Button, IconButton, TooltipNote, WithTooltip } from 'storybook/internal/components';
+import { useTheme, type Theme } from 'storybook/theming';
 import { CheckIcon, EditIcon, PinAltIcon, PowerIcon, UndoIcon } from '@storybook/icons';
 import type { Story, StoryState } from '@igility/greenroom-shared';
 import { Sidecar, type Conn, type FeedbackItem } from './api.js';
@@ -68,28 +69,31 @@ const ACTIONS: Record<StoryState, { label: string; to: StoryState; icon: React.R
   needs_reconfirm: [{ ...APPROVE, label: 'Approve again' }, REQUEST],
 };
 
-const box: React.CSSProperties = { padding: 14, font: '13px/1.5 system-ui', color: '#1f2430' };
-/** `color` is not optional here. Without it the label inherits the active Storybook
- *  theme's text colour, which under a light theme is near-white — on this white
- *  background the button renders as an empty box. */
-const btn: React.CSSProperties = {
-  font: '600 12px/1 system-ui',
-  padding: '6px 12px',
-  borderRadius: 6,
-  border: '1px solid #d9dee6',
-  background: '#fff',
-  color: '#1f2430',
-  cursor: 'pointer',
-  marginRight: 6,
-};
-const input: React.CSSProperties = {
-  font: '13px/1.4 system-ui',
+/*
+ * Every colour comes from the host's active Storybook theme, never a literal.
+ *
+ * Hardcoding them is what produced empty white buttons on a light theme: a fixed
+ * white background with no colour set, so the label inherited the theme's text colour
+ * and vanished. The fix is not better literals — a design system can be any colour,
+ * and this panel renders inside someone else's. Read the theme and the panel belongs
+ * wherever it is installed, the way the accessibility addon does.
+ */
+const boxStyle = (t: Theme): React.CSSProperties => ({
+  padding: 14,
+  font: `13px/1.5 ${t.typography.fonts.base}`,
+  color: t.color.defaultText,
+});
+
+const inputStyle = (t: Theme): React.CSSProperties => ({
+  font: `13px/1.4 ${t.typography.fonts.base}`,
   padding: '7px 9px',
-  border: '1px solid #d9dee6',
-  borderRadius: 6,
+  border: `1px solid ${t.appBorderColor}`,
+  borderRadius: t.appBorderRadius,
+  background: t.input.background,
+  color: t.input.color,
   width: '100%',
   boxSizing: 'border-box',
-};
+});
 
 function loadConn(): Conn | null {
   try {
@@ -133,29 +137,30 @@ const ConnectForm: React.FC<{ defaultUrl: string; onConnect: (c: Conn) => void }
       setError(e instanceof Error ? e.message : 'Could not reach the sidecar.');
     }
   };
+  const theme = useTheme();
   return (
-    <div style={{ ...box, maxWidth: 420 }}>
+    <div style={{ ...boxStyle(theme), maxWidth: 420 }}>
       <p style={{ marginTop: 0 }}>
         Connect this panel to a Greenroom sidecar to see and leave review feedback.
       </p>
       <label style={{ display: 'block', marginBottom: 8 }}>
         Sidecar URL
-        <input style={input} value={url} onChange={(e) => setUrl(e.target.value)} />
+        <input style={inputStyle(theme)} value={url} onChange={(e) => setUrl(e.target.value)} />
       </label>
       <label style={{ display: 'block', marginBottom: 8 }}>
         API token
         <input
-          style={input}
+          style={inputStyle(theme)}
           type="password"
           value={token}
           onChange={(e) => setToken(e.target.value)}
           placeholder="admin or agent token"
         />
       </label>
-      <button style={{ ...btn, background: '#2563eb', color: '#fff', borderColor: '#2563eb' }} onClick={connect}>
+      <Button variant="solid" size="small" onClick={connect}>
         Connect
-      </button>
-      {error ? <p style={{ color: '#dc2626' }}>{error}</p> : null}
+      </Button>
+      {error ? <p style={{ color: theme.color.negative }}>{error}</p> : null}
     </div>
   );
 };
@@ -172,18 +177,30 @@ const Thread: React.FC<{ item: FeedbackItem; client: Sidecar; onChanged: () => v
     setReply('');
     onChanged();
   };
+  const theme = useTheme();
   return (
-    <div style={{ border: '1px solid #e3e7ee', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+    <div
+      style={{
+        border: `1px solid ${theme.appBorderColor}`,
+        borderRadius: theme.appBorderRadius,
+        padding: 10,
+        marginBottom: 10,
+      }}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
         <span style={{ fontWeight: 600 }}>
           {item.thread.state === 'open' ? '● ' : item.thread.state === 'addressed' ? '◐ ' : '○ '}
           {item.thread.pin ? <code style={{ fontSize: 11 }}>{item.thread.pin.selector}</code> : 'General'}
         </span>
-        <span style={{ color: '#5c6470', fontSize: 11 }}>{item.thread.state}</span>
+        <span style={{ color: theme.textMutedColor, fontSize: 11 }}>{item.thread.state}</span>
       </div>
       {item.messages.map((m) => (
         <p key={m.id} style={{ margin: '4px 0' }}>
-          <strong style={{ color: m.author.kind === 'agent' ? '#7c3aed' : '#1f2430' }}>
+          <strong
+            style={{
+              color: m.author.kind === 'agent' ? theme.color.secondary : theme.color.defaultText,
+            }}
+          >
             {m.author.name}
             {m.author.kind === 'agent' ? ' (agent)' : ''}:
           </strong>{' '}
@@ -192,16 +209,19 @@ const Thread: React.FC<{ item: FeedbackItem; client: Sidecar; onChanged: () => v
       ))}
       <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
         <input
-          style={{ ...input, flex: 1 }}
+          style={{ ...inputStyle(theme), flex: 1 }}
           placeholder="Reply…"
           value={reply}
           onChange={(e) => setReply(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && send()}
         />
         {item.thread.state !== 'resolved' ? (
-          <button style={btn} onClick={() => void client.setThreadState(item.thread.id, 'resolved').then(onChanged)}>
+          <Button
+            size="small"
+            onClick={() => void client.setThreadState(item.thread.id, 'resolved').then(onChanged)}
+          >
             Resolve
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>
@@ -225,6 +245,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const [comment, setComment] = useState('');
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
+  const theme = useTheme();
 
   const emit = useChannel({
     [EVENTS.PIN_CAPTURED]: (captured: CapturedPin) => setPending(captured),
@@ -264,7 +285,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   if (!conn) {
     return <ConnectForm defaultUrl={param.url ?? 'http://localhost:4788'} onConnect={setConn} />;
   }
-  if (!client || !storyId) return <div style={box}>Select a story.</div>;
+  if (!client || !storyId) return <div style={boxStyle(theme)}>Select a story.</div>;
 
   const act = async (to: StoryState) => {
     try {
@@ -307,7 +328,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   };
 
   return (
-    <div style={box}>
+    <div style={boxStyle(theme)}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         {story ? (
           <>
@@ -330,12 +351,16 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         ) : (
           <span style={{ color: '#5c6470' }}>{notice || 'Loading…'}</span>
         )}
-        <span style={{ flex: 1 }} />
+        {/* Kept with the other controls, not pushed to the far edge by a flex spacer.
+            On a wide window that put the panel's primary action a thousand pixels from
+            everything else, and the first person to use it concluded there was no way
+            to leave a comment at all. */}
         <Action
           label="Comment on element"
           icon={<PinAltIcon />}
           onClick={() => emit(EVENTS.ENTER_PIN_MODE)}
         />
+        <span style={{ flex: 1 }} />
         {/* Nothing to log out of when the sidecar is serving this page: there is no
             stored connection, and dropping it would strand a reviewer on a connect
             form asking for a token they were never given. */}
@@ -366,21 +391,18 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             />
           ) : null}
           <textarea
-            style={{ ...input, minHeight: 60 }}
+            style={{ ...inputStyle(theme), minHeight: 60 }}
             placeholder="What should change?"
             value={comment}
             onChange={(e) => setComment(e.target.value)}
           />
           <div style={{ marginTop: 6 }}>
-            <button
-              style={{ ...btn, background: '#2563eb', color: '#fff', borderColor: '#2563eb' }}
-              onClick={submitPin}
-            >
+            <Button variant="solid" size="small" onClick={submitPin}>
               Post comment
-            </button>
-            <button style={btn} onClick={() => setPending(null)}>
+            </Button>
+            <Button size="small" onClick={() => setPending(null)}>
               Discard
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
