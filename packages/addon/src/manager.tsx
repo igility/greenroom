@@ -81,7 +81,9 @@ const REQUEST = {
   icon: <EditIcon />,
 };
 
-const ACTIONS: Record<StoryState, { label: string; to: StoryState; icon: React.ReactNode }[]> = {
+type ActionDef = { label: string; to: StoryState; icon: React.ReactNode };
+
+const ACTIONS: Record<StoryState, ActionDef[]> = {
   in_review: [APPROVE, REQUEST],
   changes_requested: [
     APPROVE,
@@ -91,6 +93,23 @@ const ACTIONS: Record<StoryState, { label: string; to: StoryState; icon: React.R
   approved: [{ label: 'Reopen', to: 'in_review', icon: <UndoIcon /> }, REQUEST],
   needs_reconfirm: [{ ...APPROVE, label: 'Approve again' }, REQUEST],
 };
+
+/**
+ * What the reviewer can do, given the state AND whether the render has moved since
+ * they signed off.
+ *
+ * An approved story that has changed needs "Approve again" — and until now nothing
+ * offered it. The affordance existed, on `needs_reconfirm`, which a new build used to
+ * force everything into; when that demotion was removed the state became unreachable
+ * and the button went with it. The panel then told a reviewer their component had
+ * changed and gave them nothing to do about it but reopen the whole thing.
+ */
+function actionsFor(state: StoryState, changed: boolean): ActionDef[] {
+  if (state === 'approved' && changed) {
+    return [{ ...APPROVE, label: 'Approve again' }, ...ACTIONS.approved];
+  }
+  return ACTIONS[state];
+}
 
 /*
  * Every colour comes from the host's active Storybook theme, never a literal.
@@ -738,7 +757,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             >
               {STATE_LABEL[story.state]}
             </span>
-            {ACTIONS[story.state].map((a) => {
+            {actionsFor(story.state, story.changedSinceApproval === true).map((a) => {
               const outstanding = blocked.get(subjectId) ?? 0;
               const stopped = a.to === 'approved' && outstanding > 0;
               return (
