@@ -89,9 +89,12 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
     return c.json({ stories: store.listStories({ state }) });
   });
 
-  app.get('/api/stories/:storyId', requirePrincipal(), (c) =>
-    c.json({ story: store.getStory(c.req.param('storyId')) }),
-  );
+  app.get('/api/stories/:storyId', requirePrincipal(), (c) => {
+    const story = store.getStory(c.req.param('storyId'));
+    // Approved-and-since-changed is the panel's most load-bearing distinction now that
+    // a change no longer withdraws the approval, so it travels with the story itself.
+    return c.json({ story: { ...story, changedSinceApproval: store.changedSinceApproval(story) } });
+  });
 
   app.post('/api/stories/:storyId/status', requirePrincipal(), async (c) => {
     const input = await body(

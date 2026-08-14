@@ -76,7 +76,10 @@ export class Sidecar {
     return this.req<{ ok: boolean }>('GET', '/api/health');
   }
   story(storyId: string) {
-    return this.req<{ story: Story }>('GET', `/api/stories/${encodeURIComponent(storyId)}`);
+    return this.req<{ story: Story & { changedSinceApproval?: boolean } }>(
+      'GET',
+      `/api/stories/${encodeURIComponent(storyId)}`,
+    );
   }
   /** Every thread in the review, not just the story on screen. Without this a reviewer
    *  part-way through a few hundred stories has no way to see what they have already
@@ -91,7 +94,12 @@ export class Sidecar {
    *  sheet — never appeared on a tile at all. */
   stories() {
     return this.req<{
-      stories: (Story & { openThreads: number; unresolvedThreads: number })[];
+      stories: (Story & {
+        openThreads: number;
+        unresolvedThreads: number;
+        /** Approved, and its render has moved since. Never true for anything else. */
+        changedSinceApproval: boolean;
+      })[];
     }>('GET', '/api/stories');
   }
 

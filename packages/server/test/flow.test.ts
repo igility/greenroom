@@ -239,43 +239,37 @@ describe('review cycle end to end', () => {
     expect(still.story.state).toBe('approved');
   });
 
-  it('leaves an unchanged component approved, and unsettles only what moved', async () => {
+  it('keeps every approval and reports which component changed', async () => {
     const put = (storyId: string, buildId: string, hash: string) =>
       app.request('/api/fingerprints', {
         method: 'PUT',
         headers: { cookie: reviewerCookie, ...json },
         body: JSON.stringify({ storyId, buildId, hash: hash.repeat(8) }),
       });
-    // Same render across both builds. Nobody is asked to re-affirm anything.
     await put('components-button--primary', buildA, 'aaaaaaaa');
-    await put('components-button--primary', buildB, 'aaaaaaaa');
-    // Genuinely different: this is the one worth their attention.
+    await put('components-button--primary', buildB, 'aaaaaaaa'); // unchanged
     await put('components-badge--success', buildA, 'bbbbbbbb');
-    await put('components-badge--success', buildB, 'cccccccc');
+    await put('components-badge--success', buildB, 'cccccccc'); // changed
 
-    const untouched = await (
-      await app.request('/api/stories/components-button--primary', {
-        headers: { cookie: reviewerCookie },
-      })
-    ).json();
-    expect(untouched.story.state).toBe('approved');
-    // Still pinned to the build a person actually looked at. Advancing it to B would
-    // let the anchor name a build nobody reviewed.
-    expect(untouched.story.anchorBuildId).toBe(buildA);
+    const stories = await (await app.request('/api/stories', { headers: asAdmin })).json();
+    const byId = Object.fromEntries(
+      stories.stories.map((x: { storyId: string }) => [x.storyId, x]),
+    );
 
-    const moved = await (
-      await app.request('/api/stories/components-badge--success', {
-        headers: { cookie: reviewerCookie },
-      })
-    ).json();
-    expect(moved.story.state).toBe('needs_reconfirm');
+    // Nothing is withdrawn. A render moving is reported, not punished.
+    expect(byId['components-button--primary'].state).toBe('approved');
+    expect(byId['components-button--primary'].changedSinceApproval).toBe(false);
+    expect(byId['components-badge--success'].state).toBe('approved');
+    expect(byId['components-badge--success'].changedSinceApproval).toBe(true);
+  });
 
-    const queue = await (
-      await app.request(`/api/reconfirm-queue?buildId=${buildB}`, { headers: asAdmin })
-    ).json();
-    expect(queue.items).toHaveLength(1);
-    expect(queue.items[0].story.storyId).toBe('components-badge--success');
-    expect(queue.items[0].verdict).toBe('changed');
+  it('reopens a story so the agent-approval rules have something to act on', async () => {
+    const res = await app.request('/api/stories/components-badge--success/status', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie, ...json },
+      body: JSON.stringify({ to: 'in_review' }),
+    });
+    expect(res.status).toBe(200);
   });
 
   it('blocks agent approval without a delegation, with the warning', async () => {

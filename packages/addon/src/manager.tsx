@@ -396,7 +396,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const hosted = useMemo(hostedConn, []);
   const [conn, setConn] = useState<Conn | null>(() => hosted ?? loadConn());
   const client = useMemo(() => (conn ? new Sidecar(conn) : null), [conn]);
-  const [story, setStory] = useState<Story | null>(null);
+  const [story, setStory] = useState<(Story & { changedSinceApproval?: boolean }) | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState<CapturedPin | null>(null);
@@ -408,6 +408,10 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const [scope, setScope] = useState<'item' | 'story' | 'all'>('story');
   const [allCount, setAllCount] = useState<number | null>(null);
   const [query, setQuery] = useState('');
+  /** Which threads to show. Separate from the scope select, because "where to look" and
+   *  "what state" are different questions and folding them into one control gives six
+   *  combinations nobody can hold in their head. */
+  const [threadState, setThreadState] = useState<'open' | 'resolved' | 'any'>('open');
   /** Whether tiles carry their review status. On by default: a reviewer opening a sheet
    *  wants to see at a glance which tiles already carry a comment, and discovering that
    *  requires knowing the control exists. The original argument for defaulting it off —
@@ -574,9 +578,16 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
    *  them, and the component it was about. Filtering happens over what is already loaded
    *  rather than round-tripping the server, so it stays responsive while typing. */
   const shown = useMemo(() => {
+    const byState = feedback.filter((i) =>
+      threadState === 'any'
+        ? true
+        : threadState === 'resolved'
+          ? i.thread.state === 'resolved'
+          : i.thread.state !== 'resolved',
+    );
     const q = query.trim().toLowerCase();
-    if (!q) return feedback;
-    return feedback.filter(
+    if (!q) return byState;
+    return byState.filter(
       (i) =>
         i.story.title.toLowerCase().includes(q) ||
         i.story.storyId.toLowerCase().includes(q) ||
@@ -584,7 +595,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
           (m) => m.body.toLowerCase().includes(q) || m.author.name.toLowerCase().includes(q),
         ),
     );
-  }, [feedback, query]);
+  }, [feedback, query, threadState]);
 
   if (!active) return null;
   if (!conn) {
@@ -755,6 +766,21 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             {`All feedback${allCount === null ? '' : ` (${allCount})`}`}
           </option>
         </select>
+        <select
+          aria-label="Which comment states to show"
+          value={threadState}
+          onChange={(e) => setThreadState(e.target.value as 'open' | 'resolved' | 'any')}
+          style={{
+            ...inputStyle(theme),
+            width: 'auto',
+            padding: '5px 6px',
+            font: `12px/1.2 ${theme.typography.fonts.base}`,
+          }}
+        >
+          <option value="open">Open</option>
+          <option value="resolved">Resolved</option>
+          <option value="any">Any state</option>
+        </select>
         {/* Nothing to log out of when the sidecar is serving this page: there is no
             stored connection, and dropping it would strand a reviewer on a connect
             form asking for a token they were never given. */}
@@ -770,30 +796,23 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         )}
       </div>
 
-      {story?.state === 'needs_reconfirm' ? (
-        /*
-         * Say what happened and whether it needs looking at. Nothing else.
-         *
-         * An earlier draft of this ended "so re-confirming is a formality" — a review
-         * tool telling a reviewer their sign-off does not matter, which is the one thing
-         * it must never do. The whole product is that a human actually looked. It also
-         * explained where approvals are pinned, which is our problem, not theirs.
-         */
+      {story?.changedSinceApproval ? (
+        /* The approval stands — this is a report, not a revocation. Withdrawing a
+           sign-off because a render moved punished the reviewer for things they would
+           call unrelated: another variant, a base component restyled underneath, a token
+           retuned. What is true is that the thing on screen is no longer exactly what
+           they signed off, and saying so is the honest half of that. */
         <div
           style={{
-            border: `1px solid ${theme.appBorderColor}`,
+            border: `1px solid ${theme.color.warning ?? theme.appBorderColor}`,
             borderRadius: theme.appBorderRadius,
             padding: '8px 10px',
             marginBottom: 10,
             fontSize: 12,
-            color: theme.textMutedColor,
+            color: theme.color.defaultText,
           }}
         >
-          {verdicts.get(subjectId) === 'changed'
-            ? 'This changed since you approved it.'
-            : verdicts.get(subjectId) === 'likely_unchanged'
-              ? 'A new build arrived. This looks the same as when you approved it.'
-              : 'A new build arrived after you approved this.'}
+          Approved — but this has changed since you approved it.
         </div>
       ) : null}
 
@@ -943,9 +962,13 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         <p style={{ color: theme.textMutedColor }}>
           {query.trim()
             ? `Nothing matches “${query.trim()}” in ${feedback.length} comment${feedback.length === 1 ? '' : 's'}.`
-            : scope === 'all'
-              ? 'No feedback anywhere in this review yet.'
-              : 'No feedback threads on this story yet.'}
+            : threadState === 'open'
+              ? 'Nothing open here.'
+              : threadState === 'resolved'
+                ? 'Nothing resolved here.'
+                : scope === 'all'
+                  ? 'No feedback anywhere in this review yet.'
+                  : 'No comments here yet.'}
         </p>
       )}
     </div>

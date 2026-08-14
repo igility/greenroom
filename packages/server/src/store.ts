@@ -205,7 +205,11 @@ export class Store {
    */
   listStories(
     filter: { state?: StoryState; kind?: StoryKind } = {},
-  ): (Story & { openThreads: number; unresolvedThreads: number })[] {
+  ): (Story & {
+    openThreads: number;
+    unresolvedThreads: number;
+    changedSinceApproval: boolean;
+  })[] {
     const where: string[] = [];
     const params: string[] = [];
     if (filter.state) {
@@ -248,6 +252,7 @@ export class Store {
         ...story,
         openThreads: counter.n,
         unresolvedThreads: (unresolvedCount.get(r.story_id) as { n: number }).n,
+        changedSinceApproval: this.changedSinceApproval(story),
       };
     });
   }
@@ -318,19 +323,18 @@ export class Store {
       // whoever raised it has no way to know their point was passed over. Resolving is
       // cheap and deliberate; approving around it must not be possible, from the panel,
       // the shell, or an agent.
-      // Across the whole component: an unanswered objection about any variant is an
-      // unanswered objection about the thing being signed off.
-      const members = this.componentStories(story);
-      const placeholders = members.map(() => '?').join(',');
-      const open = this.db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM threads WHERE state != 'resolved' AND story_id IN (${placeholders})`,
-        )
-        .get(...members.map((m) => m.storyId)) as { n: number };
-      if (open.n > 0) {
+      // Per variant, not across the component. A comment about the spinner on `Loading`
+      // is not an objection to `Primary`, and refusing the whole component over it is
+      // the kind of blanket refusal a reviewer reads as the tool being obstructive.
+      // What must not happen is a sign-off landing on the variant the comment is about.
+      const eligible = this.componentStories(story).filter(
+        (m) => this.unresolvedCount(m.storyId) === 0,
+      );
+      if (eligible.length === 0) {
+        const n = this.unresolvedCount(story.storyId);
         throw new HttpError(
           409,
-          `"${this.componentLabel(story)}" has ${open.n} unresolved comment${open.n === 1 ? '' : 's'} — resolve ${open.n === 1 ? 'it' : 'them'} before approving.`,
+          `"${this.componentLabel(story)}" has ${n} unresolved comment${n === 1 ? '' : 's'} — resolve ${n === 1 ? 'it' : 'them'} before approving.`,
           'OPEN_THREADS',
         );
       }
@@ -343,7 +347,11 @@ export class Store {
     // in one transaction. Each variant still gets its own audit row — the trail stays
     // answerable per story — carrying a note that names what was actually reviewed and
     // how many renditions the decision covered.
-    const members = this.componentStories(story);
+    // Approving covers the component's variants EXCEPT any carrying an unanswered
+    // comment: those are left where they are and reported, rather than swept along.
+    const all = this.componentStories(story);
+    const members =
+      to === 'approved' ? all.filter((m) => this.unresolvedCount(m.storyId) === 0) : all;
     const scope =
       members.length > 1
         ? `Reviewed as component "${this.componentLabel(story)}" (${members.length} variants).`
@@ -656,7 +664,6 @@ export class Store {
       regions.forEach((r, i) => insert.run(storyId, r.regionKey, buildId, i, at));
     })();
 
-    this.reconcileApproval(storyId, buildId);
     return { recorded: regions.length, unresolved };
   }
 
@@ -698,80 +705,50 @@ export class Store {
     return rows.length ? rows.map(rowToStory) : [story];
   }
 
+  /** Comments on this story that nobody has answered. */
+  private unresolvedCount(storyId: string): number {
+    return (
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM threads WHERE story_id = ? AND state != 'resolved'")
+        .get(storyId) as { n: number }
+    ).n;
+  }
+
   /** What to call the thing being approved, in a sentence a reviewer would recognise. */
   private componentLabel(story: Story): string {
     return story.componentTitle || story.title;
   }
 
-  private reconcileApproval(storyId: string, buildId: string) {
-    const story = this.getStory(storyId);
-    if (story.kind === 'sheet') return;
-    if (!story.anchorBuildId || story.anchorBuildId === buildId) return;
-
+  /**
+   * Whether an approved story's render has moved since the build it was approved on.
+   *
+   * Derived, never stored: it is a comparison of two fingerprints and keeping a column
+   * in step with them would only create a second thing to be wrong. Only ever true for
+   * an approved story — an unreviewed one has no sign-off for a change to have outrun.
+   *
+   * This replaces withdrawing the approval. A render moving is not evidence that the
+   * reviewer's judgement was wrong, and revoking on sight punished them for things they
+   * would call unrelated: another variant of the same component, a base component
+   * restyled underneath, a token retuned. What it is evidence of is that the thing on
+   * screen is no longer exactly the thing they signed off, and saying so — visibly, and
+   * filterably — is the honest report. The export never says a plain "approved" for a
+   * story carrying this.
+   */
+  changedSinceApproval(story: Story): boolean {
+    if (story.state !== 'approved' || !story.anchorBuildId) return false;
+    const latest = this.latestBuild();
+    if (!latest || latest.id === story.anchorBuildId) return false;
     const fp = this.db.prepare(
       'SELECT hash FROM fingerprints WHERE story_id = ? AND build_id = ? AND region_key = ?',
     );
-    const current = fp.get(storyId, buildId, ROOT_REGION) as { hash: string } | undefined;
-    const anchor = fp.get(storyId, story.anchorBuildId, ROOT_REGION) as { hash: string } | undefined;
-    if (!current || !anchor) return;
-
-    // The render moved under an approval: the sign-off no longer describes what is
-    // there, so it is withdrawn on sight. This is where "no false greens" is enforced —
-    // on evidence about the story, not on the arrival of a build.
-    if (story.state === 'approved' && current.hash !== anchor.hash) {
-      // One variant moving means the component moved. The approval covered the
-      // component, so it is withdrawn from the component — leaving siblings green
-      // because they happen not to have rendered yet would be a sign-off for a
-      // component the reviewer would no longer recognise.
-      const members = this.componentStories(story).filter((m) => m.state === 'approved');
-      this.db.transaction(() => {
-        for (const m of members) {
-          this.db
-            .prepare("UPDATE stories SET state = 'needs_reconfirm' WHERE story_id = ?")
-            .run(m.storyId);
-          this.insertEvent(m.storyId, 'approved', 'needs_reconfirm', SYSTEM_PRINCIPAL, {
-            buildId,
-            note:
-              m.storyId === storyId
-                ? `Render changed since the approved build ${story.anchorBuildId}.`
-                : `"${story.title}" changed, and this is part of the same component.`,
-          });
-        }
-      })();
-      return;
-    }
-
-    if (story.state !== 'needs_reconfirm') return;
-    if (current.hash !== anchor.hash) return;
-
-    // Whose sign-off is being carried. Attributing it to nobody would leave an approval
-    // with no author; attributing it to a fresh principal would invent one.
-    const origin = this.db
-      .prepare(
-        `SELECT principal_kind, principal_id, principal_name FROM status_events
-          WHERE story_id = ? AND to_state = 'approved'
-          ORDER BY created_at DESC LIMIT 1`,
-      )
-      .get(storyId) as
-      | { principal_kind: PrincipalKind; principal_id: string; principal_name: string }
+    const now = fp.get(story.storyId, latest.id, ROOT_REGION) as { hash: string } | undefined;
+    const then = fp.get(story.storyId, story.anchorBuildId, ROOT_REGION) as
+      | { hash: string }
       | undefined;
-    if (!origin) return;
-
-    const by: Principal = {
-      kind: origin.principal_kind,
-      id: origin.principal_id,
-      name: origin.principal_name,
-    };
-    this.db.transaction(() => {
-      this.db
-        .prepare("UPDATE stories SET state = 'approved', anchor_build_id = ? WHERE story_id = ?")
-        .run(buildId, storyId);
-      this.insertEvent(storyId, 'needs_reconfirm', 'approved', by, {
-        buildId,
-        approvalMode: 'carried',
-        note: `Carried from build ${story.anchorBuildId} — render identical.`,
-      });
-    })();
+    // Unrendered on this build tells us nothing, and guessing would be worse than
+    // saying nothing.
+    if (!now || !then) return false;
+    return now.hash !== then.hash;
   }
 
   private writeFingerprint(

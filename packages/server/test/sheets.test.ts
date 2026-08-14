@@ -181,18 +181,32 @@ describe('a sheet is not a review unit', () => {
     expect(store.getStory(SHEET).state).toBe('in_review');
   });
 
-  it('withdraws the approval once the component is seen to have changed', () => {
+  it('keeps the approval when the component changes, and says that it changed', () => {
     const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
     store.putRenderReport(INPUT, a.build.id, { hash: 'a'.repeat(32) });
     store.setStoryState(INPUT, 'approved', admin, { buildId: a.build.id });
 
     const b = store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
-    expect(store.getStory(INPUT).state).toBe('approved');
-
-    // Rendering it is the evidence. A different hash means the thing they signed off
-    // is not the thing that is there.
     store.putRenderReport(INPUT, b.build.id, { hash: 'b'.repeat(32) });
-    expect(store.getStory(INPUT).state).toBe('needs_reconfirm');
+
+    // A render moving is not evidence the reviewer's judgement was wrong, and revoking
+    // on sight punished them for things they would call unrelated. The sign-off stands;
+    // what changed is reported.
+    const story = store.getStory(INPUT);
+    expect(story.state).toBe('approved');
+    expect(store.changedSinceApproval(story)).toBe(true);
+    // Still pinned to the build a person actually looked at.
+    expect(story.anchorBuildId).toBe(a.build.id);
+  });
+
+  it('flags only approved stories — an unreviewed one has no sign-off to outrun', () => {
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
+    store.putRenderReport(INPUT, a.build.id, { hash: 'a'.repeat(32) });
+    const b = store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
+    store.putRenderReport(INPUT, b.build.id, { hash: 'b'.repeat(32) });
+
+    expect(store.getStory(INPUT).state).toBe('in_review');
+    expect(store.changedSinceApproval(store.getStory(INPUT))).toBe(false);
   });
 });
 
