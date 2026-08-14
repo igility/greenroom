@@ -728,6 +728,23 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
     }
   };
 
+  /**
+   * The panel's one-line account of why there is nothing to review, or null when there
+   * is. Both cases mean the same thing to a reviewer — no subject is selected — so they
+   * resolve to one slot rather than two branches that have to be kept looking alike.
+   *
+   * A contact sheet is a survey surface, not a review unit: the server refuses to
+   * approve one (NOT_A_REVIEW_UNIT) because signing off a page that contains no code
+   * would sign off nothing. Offering the button anyway and letting the server say no is
+   * a control that exists only to fail — the guard is right, the affordance was not.
+   */
+  const statusMessage =
+    story?.kind === 'sheet' && !selectedRegion
+      ? 'Survey page — click a tile to review that component.'
+      : story
+        ? null
+        : notice || 'Loading…';
+
   /* What the rail is showing. A toggle only ever announced the state you were about to
      move to, which reads as a command rather than a filter; a select states where you
      are. The first option is deliberately labelled by what the store actually returns:
@@ -786,6 +803,29 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         overflowWrap: 'anywhere',
       }}
     >
+      {/* A sentence and a row of icon buttons do not belong on the same line. Sharing
+          one, the text took the width it needed and shunted the buttons after it —
+          leaving the pin stranded beside the full stop and the eye alone on the next
+          row, which reads as two broken rows rather than one message. Above the
+          controls it is what it is: a statement about the surface, followed by the
+          things you can do on it.
+
+          Covers the empty case too — a contact sheet with no tile picked, and the
+          loading/error line before a story resolves. Both are the panel saying there is
+          nothing to act on, and both wrapped the same way. */}
+      {statusMessage ? (
+        <div
+          style={{
+            color: theme.textMutedColor,
+            fontSize: 12,
+            marginBottom: 8,
+            minWidth: 0,
+          }}
+        >
+          {statusMessage}
+        </div>
+      ) : null}
+
       <div
         style={{
           display: 'flex',
@@ -796,18 +836,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
           minWidth: 0,
         }}
       >
-        {story?.kind === 'sheet' && !selectedRegion ? (
-          /*
-           * A contact sheet is a survey surface, not a review unit: the server refuses to
-           * approve one (NOT_A_REVIEW_UNIT) because signing off a page that contains no
-           * code would sign off nothing. Offering the button anyway and letting the
-           * server say no is a control that exists only to fail — the guard is right, the
-           * affordance was not.
-           */
-          <span style={{ color: theme.textMutedColor, fontSize: 12 }}>
-            Survey page — click a tile to review that component.
-          </span>
-        ) : story ? (
+        {statusMessage ? null : story ? (
           <>
             <span
               style={{
@@ -844,9 +873,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
               );
             })}
           </>
-        ) : (
-          <span style={{ color: theme.textMutedColor }}>{notice || 'Loading…'}</span>
-        )}
+        ) : null}
 
       {/* Kept with the other controls, not pushed to the far edge by a flex spacer.
             On a wide window that put the panel's primary action a thousand pixels from
