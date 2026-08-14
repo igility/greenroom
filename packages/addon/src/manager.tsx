@@ -100,6 +100,22 @@ function loadConn(): Conn | null {
   }
 }
 
+/**
+ * A build hosted by the sidecar is served from `/builds/<id>/`, which means this
+ * Storybook and the review store are the same origin and the reviewer's session
+ * cookie already authenticates. Detect that and connect without asking.
+ *
+ * This is what lets a client follow one magic link and land in the host's own
+ * Storybook — its branding, its navigation, its curation — with review live and
+ * nothing to configure. Handing a client a URL and an API token was never going to
+ * happen. Anywhere else (a developer running `storybook dev`), the form still
+ * appears and a token is still required.
+ */
+function hostedConn(): Conn | null {
+  if (typeof location === 'undefined') return null;
+  return /^\/builds\/[^/]+\//.test(location.pathname) ? { url: location.origin } : null;
+}
+
 const ConnectForm: React.FC<{ defaultUrl: string; onConnect: (c: Conn) => void }> = ({
   defaultUrl,
   onConnect,
@@ -197,7 +213,10 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const param = useParameter<{ url?: string }>(PARAM_KEY, {});
   const storyId = (api.getCurrentStoryData?.() as { id?: string } | undefined)?.id;
 
-  const [conn, setConn] = useState<Conn | null>(loadConn);
+  // Hosted wins over anything stored: a reviewer arriving on a magic link must not
+  // inherit some developer's leftover sidecar from a previous visit in this browser.
+  const hosted = useMemo(hostedConn, []);
+  const [conn, setConn] = useState<Conn | null>(() => hosted ?? loadConn());
   const client = useMemo(() => (conn ? new Sidecar(conn) : null), [conn]);
   const [story, setStory] = useState<Story | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
@@ -268,6 +287,11 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         : undefined;
       await client.createThread({
         storyId: pending.storyId,
+        // The tile clicked, not the surface it sits on. `preview.ts` resolves this in
+        // both the shell and here; the panel used to drop it, which filed every
+        // comment left on a contact sheet against the sheet — a page containing no
+        // code — instead of the component that needs the fix.
+        regionStoryId: pending.regionStoryId,
         buildId: build.id,
         body: comment.trim(),
         pin: pending.pin,
@@ -312,14 +336,19 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
           icon={<PinAltIcon />}
           onClick={() => emit(EVENTS.ENTER_PIN_MODE)}
         />
-        <Action
-          label="Log out of this sidecar"
-          icon={<PowerIcon />}
-          onClick={() => {
-            localStorage.removeItem(CONN_KEY);
-            setConn(null);
-          }}
-        />
+        {/* Nothing to log out of when the sidecar is serving this page: there is no
+            stored connection, and dropping it would strand a reviewer on a connect
+            form asking for a token they were never given. */}
+        {hosted ? null : (
+          <Action
+            label="Log out of this sidecar"
+            icon={<PowerIcon />}
+            onClick={() => {
+              localStorage.removeItem(CONN_KEY);
+              setConn(null);
+            }}
+          />
+        )}
       </div>
 
       {story && notice ? <p style={{ color: '#dc2626' }}>{notice}</p> : null}

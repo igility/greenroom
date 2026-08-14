@@ -289,6 +289,26 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
       path: '/',
       maxAge: 60 * 60 * 24 * 30,
     });
-    return c.redirect('/review/');
+
+    /*
+     * Land the reviewer in the host's own Storybook rather than our shell.
+     *
+     * The build is served from this origin, so its manager is same-origin with the
+     * API and the cookie just set above authenticates the addon panel with nothing to
+     * configure. What the reviewer gets is the Storybook the team actually built —
+     * its branding, its navigation, whatever curation and guidance it carries — with
+     * review live inside it, instead of a generic surface that discards all of that.
+     *
+     * The original decision here was the opposite: keep the client out of the
+     * Storybook manager, because the manager meant a raw sidebar of several hundred
+     * entries and a row of developer tabs. That reasoning holds for an uncurated
+     * Storybook, which is why the shell stays and `?surface=shell` still reaches it.
+     * It stops holding the moment a host has curated one, and then the host's own
+     * surface is better than ours by every measure we would use to judge it.
+     */
+    const wantsShell = c.req.query('surface') === 'shell';
+    const build = store.latestBuild();
+    if (wantsShell || !build) return c.redirect('/review/');
+    return c.redirect(`/builds/${build.id}/index.html`);
   });
 }

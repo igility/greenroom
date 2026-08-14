@@ -17,17 +17,34 @@ export interface FeedbackItem {
 
 export interface Conn {
   url: string;
-  token: string;
+  /** Omitted when the sidecar is serving this page itself — see below. */
+  token?: string;
 }
 
 export class Sidecar {
   constructor(private conn: Conn) {}
 
+  /**
+   * A Storybook hosted by the sidecar is same-origin with it, so the reviewer's
+   * session cookie — already set by the magic link they followed — authenticates
+   * these calls and no token is needed. That is the whole reason a client can be
+   * dropped into their own Storybook with review working and nothing to configure.
+   *
+   * The cookie only rides same-origin requests. Cross-origin the panel still uses a
+   * bearer token, and must NOT send credentials: `cors()` answers with
+   * `Access-Control-Allow-Origin: *`, which the browser rejects outright on a
+   * credentialed request.
+   */
+  private get sameOrigin(): boolean {
+    return typeof location !== 'undefined' && this.conn.url.replace(/\/$/, '') === location.origin;
+  }
+
   private async req<T>(method: string, path: string, body?: unknown, contentType?: string): Promise<T> {
     const res = await fetch(`${this.conn.url.replace(/\/$/, '')}${path}`, {
       method,
+      credentials: this.sameOrigin ? 'include' : 'omit',
       headers: {
-        authorization: `Bearer ${this.conn.token}`,
+        ...(this.conn.token ? { authorization: `Bearer ${this.conn.token}` } : {}),
         ...(body !== undefined
           ? { 'content-type': contentType ?? 'application/json' }
           : {}),
@@ -81,6 +98,10 @@ export class Sidecar {
   }
   createThread(input: {
     storyId: string;
+    /** The tile that was clicked, when the story declares regions. The server files
+     *  the comment against that component and records this surface as where it was
+     *  said; null, or an id that does not resolve, leaves it on the surface. */
+    regionStoryId?: string | null;
     buildId: string;
     body: string;
     pin?: { selector: string; x: number; y: number; viewportWidth: number; viewportHeight: number };
