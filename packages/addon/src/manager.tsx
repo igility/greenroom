@@ -412,13 +412,48 @@ const Thread: React.FC<{
 
 const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const api = useStorybookApi();
-  const param = useParameter<{ url?: string }>(PARAM_KEY, {});
+  /**
+   * `parameters.greenroom` from the host's Storybook config.
+   *
+   * A `token` here connects the panel with no form to fill in, which is what makes a
+   * developer's own `storybook dev` usable: without it the URL and an API token have to
+   * be re-entered against a sidecar that is on the same machine, every time browser
+   * storage is cleared.
+   *
+   * It is for LOCAL configuration only. Storybook compiles parameters into the manager
+   * bundle, so a token set unconditionally ships to whoever can open the built
+   * Storybook. Hosts must gate it on an environment variable that is absent in
+   * production — see the README. The reviewer path needs no token at all: a build
+   * served by the sidecar is same-origin and the session cookie authenticates it.
+   */
+  const param = useParameter<{ url?: string; token?: string }>(PARAM_KEY, {});
   const storyId = (api.getCurrentStoryData?.() as { id?: string } | undefined)?.id;
 
   // Hosted wins over anything stored: a reviewer arriving on a magic link must not
   // inherit some developer's leftover sidecar from a previous visit in this browser.
   const hosted = useMemo(hostedConn, []);
   const [conn, setConn] = useState<Conn | null>(() => hosted ?? loadConn());
+
+  /**
+   * Adopt a configured connection when there is nothing better.
+   *
+   * Precedence, strongest first: hosted (the reviewer's cookie), then whatever this
+   * browser stored from the connect form, then configuration.
+   *
+   * `dismissedConfig` is what makes logging out mean something. Without it, logging out
+   * clears the connection, this effect sees an empty slot on the very next render and
+   * reconnects to the configured sidecar — a button that visibly does nothing. It is
+   * not read from storage on purpose: a fresh tab should pick the configured sidecar
+   * up again, because that is the point of configuring it.
+   *
+   * Applied in an effect rather than the initial state because parameters arrive with
+   * the story, which is usually a render or two after the panel first mounts.
+   */
+  const [dismissedConfig, setDismissedConfig] = useState(false);
+  useEffect(() => {
+    if (hosted || conn || dismissedConfig || !param.url || !param.token) return;
+    setConn({ url: param.url, token: param.token });
+  }, [hosted, conn, dismissedConfig, param.url, param.token]);
   const client = useMemo(() => (conn ? new Sidecar(conn) : null), [conn]);
   const [story, setStory] = useState<(Story & { changedSinceApproval?: boolean }) | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
@@ -921,6 +956,7 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             icon={<PowerIcon />}
             onClick={() => {
               localStorage.removeItem(CONN_KEY);
+              setDismissedConfig(true);
               setConn(null);
             }}
           />
