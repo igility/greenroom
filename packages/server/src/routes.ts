@@ -119,6 +119,31 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
     return c.json({ story });
   });
 
+  // What else moved in this build. Offered only after a component has actually been
+  // re-confirmed, so the reviewer is agreeing on the strength of something they just
+  // looked at rather than being handed a bulk-approve button on arrival.
+  app.get('/api/stories/:storyId/also-changed', requirePrincipal(), (c) => {
+    const storyId = c.req.param('storyId');
+    return c.json({ stories: store.alsoChanged(storyId) });
+  });
+
+  app.post('/api/stories/batch-approve', requirePrincipal(), async (c) => {
+    const input = await body(
+      c,
+      z.object({
+        storyIds: z.array(z.string()).min(1),
+        /** The component the reviewer actually opened; named in every audit row. */
+        becauseOf: z.string(),
+        buildId: z.string(),
+      }),
+    );
+    const result = store.batchApprove(input.storyIds, principalOf(c), {
+      buildId: input.buildId,
+      becauseOf: input.becauseOf,
+    });
+    return c.json(result);
+  });
+
   app.get('/api/reconfirm-queue', requirePrincipal(), (c) => {
     const buildId = c.req.query('buildId') ?? store.latestBuild()?.id;
     if (!buildId) throw new HttpError(400, 'No builds uploaded yet.');

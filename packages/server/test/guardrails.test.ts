@@ -25,6 +25,14 @@ const zip = (marker: string) =>
             name: 'Primary',
             importPath: './src/Button.stories.tsx',
           },
+          // A second, independent component. Batch approval is about applying one
+          // review to OTHER components, so it cannot be shown with only one.
+          'components-badge--success': {
+            type: 'story',
+            title: 'Components/Badge',
+            name: 'Success',
+            importPath: './src/Badge.stories.tsx',
+          },
         },
       }),
     ),
@@ -63,6 +71,123 @@ describe('approval guardrails', () => {
     expect(() =>
       store.setStoryState('components-button--primary', 'approved', adminP, { buildId: a.build.id }),
     ).toThrowError(/newer build/i);
+  });
+
+  it('re-confirms an approval whose render has moved, advancing the anchor', () => {
+    const STORY = 'components-button--primary';
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+    store.setStoryState(STORY, 'approved', adminP, { buildId: a.build.id });
+    store.putRenderReport(STORY, a.build.id, { hash: 'as-approved' });
+
+    const b = store.ingestBuildZip(zip('b'), { label: 'v2' }, adminP);
+    store.putRenderReport(STORY, b.build.id, { hash: 'restyled' });
+    expect(store.changedSinceApproval(store.getStory(STORY))).toBe(true);
+
+    // The act the reviewer performs on a flagged component. Before approved → approved
+    // existed it was refused outright, so the flag could never be cleared and the
+    // Approve button did nothing at all.
+    store.setStoryState(STORY, 'approved', adminP, { buildId: b.build.id });
+
+    const after = store.getStory(STORY);
+    expect(after.state).toBe('approved');
+    expect(after.anchorBuildId).toBe(b.build.id);
+    expect(store.changedSinceApproval(after)).toBe(false);
+    // The re-look is its own entry in the trail, not a silent anchor move.
+    const events = store.listEvents(STORY).filter((e) => e.to === 'approved');
+    expect(events).toHaveLength(2);
+    expect(events[1]!.buildId).toBe(b.build.id);
+  });
+
+  it('refuses a re-approval when nothing has changed (409 NOTHING_CHANGED)', () => {
+    const STORY = 'components-button--primary';
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+    store.setStoryState(STORY, 'approved', adminP, { buildId: a.build.id });
+    // Otherwise a client could write unlimited identical sign-offs into an append-only
+    // trail, each indistinguishable from a genuine re-look.
+    expect(() =>
+      store.setStoryState(STORY, 'approved', adminP, { buildId: a.build.id }),
+    ).toThrowError(/already approved and has not changed/i);
+    expect(store.listEvents(STORY).filter((e) => e.to === 'approved')).toHaveLength(1);
+  });
+
+  it('batch-approves the other changed components, recorded as batch and not as a look', () => {
+    const A = 'components-button--primary';
+    const B = 'components-badge--success';
+    const one = store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+    for (const s of [A, B]) {
+      store.setStoryState(s, 'approved', adminP, { buildId: one.build.id });
+      store.putRenderReport(s, one.build.id, { hash: `as-approved-${s}` });
+    }
+    const two = store.ingestBuildZip(zip('b'), { label: 'v2' }, adminP);
+    for (const s of [A, B]) store.putRenderReport(s, two.build.id, { hash: `moved-${s}` });
+
+    // The reviewer opens A. B is offered because it also moved in this build — the
+    // offer is drawn from the flag, never from a claim that A caused B.
+    const offered = store.alsoChanged(A).map((s) => s.storyId);
+    expect(offered).toEqual([B]);
+
+    store.setStoryState(A, 'approved', adminP, { buildId: two.build.id });
+    const result = store.batchApprove([B], adminP, {
+      buildId: two.build.id,
+      becauseOf: A,
+    });
+    expect(result.approved).toEqual([B]);
+    expect(result.skipped).toEqual([]);
+    expect(store.changedSinceApproval(store.getStory(B))).toBe(false);
+
+    const a = store.listEvents(A).filter((e) => e.to === 'approved').at(-1)!;
+    const b = store.listEvents(B).filter((e) => e.to === 'approved').at(-1)!;
+    // The trail has to be able to tell the component that was opened from the one
+    // that was not, or an export overstates what a person actually examined.
+    expect(a.approvalMode).toBe('direct');
+    expect(b.approvalMode).toBe('batch');
+    expect(b.note).toContain('not individually inspected');
+    expect(b.note).toContain('Components/Button');
+    // No causal claim anywhere in it.
+    expect(b.note).not.toMatch(/because of|caused|due to/i);
+  });
+
+  it('a batch skips the members it cannot approve instead of failing the run', () => {
+    const A = 'components-button--primary';
+    const B = 'components-badge--success';
+    const one = store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+    for (const s of [A, B]) {
+      store.setStoryState(s, 'approved', adminP, { buildId: one.build.id });
+      store.putRenderReport(s, one.build.id, { hash: `as-approved-${s}` });
+    }
+    const two = store.ingestBuildZip(zip('b'), { label: 'v2' }, adminP);
+    for (const s of [A, B]) store.putRenderReport(s, two.build.id, { hash: `moved-${s}` });
+    // An objection raised on B after the offer was drawn.
+    store.createThread({ storyId: B, buildId: two.build.id, body: 'the green is off' }, adminP);
+
+    store.setStoryState(A, 'approved', adminP, { buildId: two.build.id });
+    const result = store.batchApprove([B], adminP, { buildId: two.build.id, becauseOf: A });
+
+    expect(result.approved).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.reason).toBe('OPEN_THREADS');
+    // Skipped means untouched, not quietly approved.
+    expect(store.changedSinceApproval(store.getStory(B))).toBe(true);
+  });
+
+  it('refuses a batch approval from an agent even under a delegation', () => {
+    const A = 'components-button--primary';
+    const B = 'components-badge--success';
+    const one = store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+    for (const s of [A, B]) {
+      store.setStoryState(s, 'approved', adminP, { buildId: one.build.id });
+      store.putRenderReport(s, one.build.id, { hash: `as-approved-${s}` });
+    }
+    const two = store.ingestBuildZip(zip('b'), { label: 'v2' }, adminP);
+    for (const s of [A, B]) store.putRenderReport(s, two.build.id, { hash: `moved-${s}` });
+    store.createDelegation('Client email: approve the remaining screens.', adminP);
+
+    const agent: Principal = { kind: 'agent', id: 'ag-1', name: 'Claude' };
+    // A delegation authorizes an agent to approve; it does not authorize it to approve
+    // things nobody named. Batch is a human shorthand for "and the rest of these".
+    const result = store.batchApprove([B], agent, { buildId: two.build.id, becauseOf: A });
+    expect(result.approved).toEqual([]);
+    expect(result.skipped[0]!.reason).toBe('AGENT_BATCH_FORBIDDEN');
   });
 
   it('rejects a status transition with a non-existent build id', () => {

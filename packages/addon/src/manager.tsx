@@ -399,6 +399,9 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const [story, setStory] = useState<(Story & { changedSinceApproval?: boolean }) | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [notice, setNotice] = useState('');
+  /** The pending "these also changed" offer. Null unless a re-confirmation just
+   *  happened and something else in this build is still flagged. */
+  const [batch, setBatch] = useState<{ others: Story[]; buildId: string } | null>(null);
   const [pending, setPending] = useState<CapturedPin | null>(null);
   const [comment, setComment] = useState('');
   const [tick, setTick] = useState(0);
@@ -606,11 +609,46 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const act = async (to: StoryState) => {
     try {
       const build = (await client.latestBuild()).build;
+      // Whether this was a re-confirmation has to be read BEFORE the call, because the
+      // call is what clears the flag.
+      const wasReconfirm = to === 'approved' && story?.changedSinceApproval === true;
       const r = await client.setStatus(subjectId, to, to === 'approved' ? (build?.id ?? undefined) : undefined);
       setStory(r.story);
       refresh();
+      // Only ever offered off the back of a review that just happened. Showing it on
+      // arrival would be a bulk-approve button, which is a different and much worse
+      // thing: this asks "you looked at that one — do these too?", and the answer is
+      // only meaningful because they did look.
+      if (wasReconfirm && build) {
+        const others = (await client.alsoChanged(subjectId)).stories;
+        setBatch(others.length ? { others, buildId: build.id } : null);
+      }
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'Action failed.');
+    }
+  };
+
+  const runBatch = async () => {
+    if (!batch) return;
+    try {
+      const r = await client.batchApprove(
+        batch.others.map((s) => s.storyId),
+        subjectId,
+        batch.buildId,
+      );
+      setBatch(null);
+      refresh();
+      // Say what did not happen. A silent partial success is the failure mode here:
+      // the reviewer believes they cleared the list and the leftovers are invisible.
+      if (r.skipped.length) {
+        setNotice(
+          `Approved ${r.approved.length}. Left ${r.skipped.length} alone: ${r.skipped
+            .map((s) => s.message)
+            .join(' ')}`,
+        );
+      }
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Batch approval failed.');
     }
   };
 
@@ -813,6 +851,50 @@ const Panel: React.FC<{ active: boolean }> = ({ active }) => {
           }}
         >
           Approved — but this has changed since you approved it.
+        </div>
+      ) : null}
+
+      {batch ? (
+        /* Deliberately makes no causal claim. It does not say these changed BECAUSE of
+           the one just reviewed — nothing here knows that. It says they were flagged in
+           the same build, which is all that is true, and leaves the inference to the
+           person. Naming them rather than showing a bare count is the difference
+           between agreeing to something and agreeing to a number. */
+        <div
+          style={{
+            border: `1px solid ${theme.appBorderColor}`,
+            borderRadius: theme.appBorderRadius,
+            padding: '10px 12px',
+            marginBottom: 10,
+            fontSize: 12,
+            color: theme.color.defaultText,
+          }}
+        >
+          <div style={{ marginBottom: 6 }}>
+            {batch.others.length} other {batch.others.length === 1 ? 'component' : 'components'}{' '}
+            also changed in this build.
+          </div>
+          <ul
+            style={{
+              margin: '0 0 8px',
+              paddingLeft: 16,
+              maxHeight: 132,
+              overflowY: 'auto',
+              color: theme.textMutedColor,
+            }}
+          >
+            {batch.others.map((s) => (
+              <li key={s.storyId}>{s.componentTitle || s.title}</li>
+            ))}
+          </ul>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button size="small" variant="outline" onClick={runBatch}>
+              Approve {batch.others.length} without opening
+            </Button>
+            <Button size="small" variant="ghost" onClick={() => setBatch(null)}>
+              Review separately
+            </Button>
+          </div>
         </div>
       ) : null}
 

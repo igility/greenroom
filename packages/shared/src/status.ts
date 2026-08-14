@@ -33,7 +33,13 @@ const HUMAN_TRANSITIONS: Record<StoryState, StoryState[]> = {
   in_review: ['changes_requested', 'approved'],
   changes_requested: ['addressed', 'approved', 'in_review'],
   addressed: ['approved', 'changes_requested', 'in_review'],
-  approved: ['in_review', 'changes_requested'],
+  // approved → approved is re-confirmation: the render moved after a sign-off, the
+  // reviewer looked again, and it is still fine. It used to run through
+  // needs_reconfirm, which a build arrival forced everything into; that demotion is
+  // gone, and this is what replaces it. Whether a given re-confirmation is meaningful
+  // depends on evidence this table cannot see, so the store refuses the no-op case —
+  // here the edge simply has to exist, or a flagged component can never be cleared.
+  approved: ['in_review', 'changes_requested', 'approved'],
   needs_reconfirm: ['approved', 'changes_requested', 'in_review'],
 };
 
@@ -51,7 +57,9 @@ const AGENT_DELEGATED_TRANSITIONS: Record<StoryState, StoryState[]> = {
   in_review: ['approved'],
   changes_requested: [],
   addressed: ['approved'],
-  approved: [],
+  // Re-confirming is the same act as approving, on a render that moved, so it carries
+  // the same authorization and the same "delegated" label in the audit.
+  approved: ['approved'],
   needs_reconfirm: ['approved'],
 };
 

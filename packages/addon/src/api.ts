@@ -113,6 +113,25 @@ export class Sidecar {
     }>('GET', '/api/reconfirm-queue');
   }
 
+  /** Other components whose render has also moved since they were approved. Offered
+   *  only after the reviewer has re-confirmed one, so the decision rests on something
+   *  they just looked at. */
+  alsoChanged(storyId: string) {
+    return this.req<{ stories: Story[] }>(
+      'GET',
+      `/api/stories/${encodeURIComponent(storyId)}/also-changed`,
+    );
+  }
+
+  /** Approve those others on the strength of the one reviewed. Partial by design —
+   *  anything carrying a new objection comes back in `skipped`, not as a failure. */
+  batchApprove(storyIds: string[], becauseOf: string, buildId: string) {
+    return this.req<{
+      approved: string[];
+      skipped: { storyId: string; reason: string; message: string }[];
+    }>('POST', '/api/stories/batch-approve', { storyIds, becauseOf, buildId });
+  }
+
   feedbackForStory(storyId: string) {
     return this.req<{ feedback: FeedbackItem[] }>(
       'GET',

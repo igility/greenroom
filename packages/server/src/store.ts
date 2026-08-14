@@ -282,7 +282,7 @@ export class Store {
     storyId: string,
     to: StoryState,
     by: Principal,
-    opts: { buildId?: string; note?: string } = {},
+    opts: { buildId?: string; note?: string; batchOf?: string } = {},
   ): Story {
     const story = this.getStory(storyId);
 
@@ -336,6 +336,19 @@ export class Store {
       // is not an objection to `Primary`, and refusing the whole component over it is
       // the kind of blanket refusal a reviewer reads as the tool being obstructive.
       // What must not happen is a sign-off landing on the variant the comment is about.
+      // Re-confirming an approval is only meaningful when the render actually moved.
+      // Allowing it otherwise would let a client write unlimited identical sign-offs
+      // into an append-only trail, each one indistinguishable from a real re-look.
+      // Asked at the COMPONENT: the reviewer re-confirms the component, and which
+      // variant's id the panel happened to send is an implementation detail — checking
+      // only that one would refuse whenever the change landed on a sibling.
+      if (story.state === 'approved' && !this.componentChanged(story)) {
+        throw new HttpError(
+          409,
+          `"${this.componentLabel(story)}" is already approved and has not changed since.`,
+          'NOTHING_CHANGED',
+        );
+      }
       const eligible = this.componentStories(story).filter(
         (m) => this.unresolvedCount(m.storyId) === 0,
       );
@@ -350,6 +363,19 @@ export class Store {
 
       approvalMode = by.kind === 'agent' ? 'delegated' : 'direct';
       if (approvalMode === 'delegated') delegationId = this.activeDelegation()!.id;
+      // A batch member was never opened. Recording it as `direct` would put a look that
+      // did not happen into the trail; `batch` says what occurred and names the one
+      // component that did get looked at.
+      if (opts.batchOf) {
+        if (by.kind === 'agent') {
+          throw new HttpError(
+            403,
+            'Batch approval is a human convenience. An agent must name every story it approves.',
+            'AGENT_BATCH_FORBIDDEN',
+          );
+        }
+        approvalMode = 'batch';
+      }
     }
 
     // The decision covers the component, so it is written across every variant of it,
@@ -365,15 +391,29 @@ export class Store {
       members.length > 1
         ? `Reviewed as component "${this.componentLabel(story)}" (${members.length} variants).`
         : undefined;
+    // Deliberately makes no causal claim. It does not say this component changed
+    // BECAUSE of the one reviewed — nothing here knows that, and asserting it would be
+    // inventing a dependency graph out of a coincidence of timing. It says only what is
+    // true: both were flagged in the same build, and the reviewer looked at that one.
+    const batch = opts.batchOf
+      ? `Approved as part of a batch after reviewing "${this.componentLabel(
+          this.getStory(opts.batchOf),
+        )}"; also flagged as changed in this build, not individually inspected.`
+      : undefined;
     this.db.transaction(() => {
       for (const m of members) {
-        if (m.state === to) continue;
+        // A re-confirmation leaves the state where it is and moves the anchor forward,
+        // so "same state" is no longer the same as "nothing to do". Skipping on state
+        // alone made re-approval silently do nothing: the anchor stayed on the old
+        // build, the change flag never cleared, and the button appeared broken.
+        const anchorMoves = to === 'approved' && m.anchorBuildId !== buildId;
+        if (m.state === to && !anchorMoves) continue;
         this.db
           .prepare('UPDATE stories SET state = ?, anchor_build_id = ? WHERE story_id = ?')
           .run(to, to === 'approved' ? buildId : m.anchorBuildId, m.storyId);
         this.insertEvent(m.storyId, m.state, to, by, {
           buildId,
-          note: [opts.note, scope].filter(Boolean).join(' ') || undefined,
+          note: [opts.note, scope, batch].filter(Boolean).join(' ') || undefined,
           approvalMode,
           delegationId,
         });
@@ -748,6 +788,61 @@ export class Store {
    * filterably — is the honest report. The export never says a plain "approved" for a
    * story carrying this.
    */
+  /**
+   * The components, other than the one just reviewed, whose renders have also moved
+   * since they were approved. One per component — offering the reviewer thirty-eight
+   * rows that are seven components would misrepresent the size of what they are
+   * agreeing to.
+   */
+  alsoChanged(exceptStoryId: string): Story[] {
+    const except = this.getStory(exceptStoryId);
+    const seen = new Set<string>([except.importPath]);
+    const out: Story[] = [];
+    for (const s of this.listStories({ kind: 'story' })) {
+      if (!s.changedSinceApproval || seen.has(s.importPath)) continue;
+      seen.add(s.importPath);
+      out.push(s);
+    }
+    return out;
+  }
+
+  /**
+   * Approve several changed components on the strength of one that was reviewed.
+   *
+   * Partial by design: a member carrying an unresolved comment, or one that has stopped
+   * being changed since the list was drawn, is skipped and reported rather than failing
+   * the run. The alternative is an all-or-nothing button that a single stale row can
+   * make permanently unclickable, with nothing on screen saying which row it was.
+   */
+  batchApprove(
+    storyIds: string[],
+    by: Principal,
+    opts: { buildId: string; becauseOf: string },
+  ): { approved: string[]; skipped: { storyId: string; reason: string; message: string }[] } {
+    const approved: string[] = [];
+    const skipped: { storyId: string; reason: string; message: string }[] = [];
+    for (const storyId of storyIds) {
+      try {
+        this.setStoryState(storyId, 'approved', by, {
+          buildId: opts.buildId,
+          batchOf: opts.becauseOf,
+        });
+        approved.push(storyId);
+      } catch (err) {
+        if (err instanceof HttpError) {
+          skipped.push({ storyId, reason: err.reason ?? 'ERROR', message: err.message });
+        } else throw err;
+      }
+    }
+    return { approved, skipped };
+  }
+
+  /** True when any variant of the component has moved since its approval. The review
+   *  unit is the component, so this is the question re-confirmation actually turns on. */
+  componentChanged(story: Story): boolean {
+    return this.componentStories(story).some((m) => this.changedSinceApproval(m));
+  }
+
   changedSinceApproval(story: Story): boolean {
     if (story.state !== 'approved' || !story.anchorBuildId) return false;
     const latest = this.latestBuild();

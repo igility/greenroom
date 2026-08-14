@@ -21,7 +21,18 @@ export type MessageKind = 'comment' | 'agent_note' | 'status_change';
  *  - `carried`   a human's earlier approval was carried onto a later build whose render
  *                is byte-identical. Never a new sign-off: the audit keeps it distinct so
  *                an export can always answer "did a person look at THIS build". */
-export type ApprovalMode = 'direct' | 'delegated' | 'carried';
+/**
+ * How a sign-off came about — and therefore how much weight the audit trail can put
+ * on it.
+ *
+ * `batch` is the weakest of the human modes on purpose: the reviewer inspected one
+ * component and applied the same decision to others flagged as changed in the same
+ * build, without opening each. That is a legitimate thing to do — a token or base
+ * component moving can flag dozens at once — but it is not the same evidence as a
+ * direct look, and an export that reported the two identically would overstate what
+ * a person actually examined.
+ */
+export type ApprovalMode = 'direct' | 'delegated' | 'carried' | 'batch';
 
 export type FingerprintVerdict = 'likely_unchanged' | 'changed' | 'unknown';
 
