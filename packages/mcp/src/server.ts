@@ -52,9 +52,13 @@ export function buildServer(client: SidecarClient): McpServer {
       title: 'List review feedback',
       description:
         'List human review feedback threads on Storybook stories. Each item carries the ' +
-        "story's CSF importPath so you can open the source file the story comes from, plus " +
-        'the pin location, story args at comment time, whether a screenshot exists, and the ' +
-        'full message history. Defaults to state=open (the feedback still awaiting work).',
+        "story's CSF importPath so you can open the source file the story comes from, the " +
+        'component it belongs to, plus the pin location, story args at comment time, whether ' +
+        'a screenshot exists, and the full message history. Defaults to state=open (the ' +
+        'feedback still awaiting work).\n\n' +
+        'A comment is filed against the component the reviewer was pointing at, which is ' +
+        'not always the story they had open — see seenOnStoryId. Fix the component named in ' +
+        'story.importPath.',
       inputSchema: {
         state: z
           .enum(['open', 'addressed', 'resolved', 'all'])
@@ -137,7 +141,10 @@ export function buildServer(client: SidecarClient): McpServer {
       description:
         'Mark one feedback thread as addressed after you have done the work it asked for. ' +
         'Optionally post a note first explaining the fix. Humans resolve threads; you only ' +
-        'signal that the work is done.',
+        'signal that the work is done. Addressed is NOT resolved: the thread still counts ' +
+        'as unresolved and still blocks approval of the variant it sits on until a human ' +
+        'accepts your fix. That is deliberate — do not read a still-blocked variant as your ' +
+        'change having failed, and never try to route around it.',
       inputSchema: {
         threadId: z.string().describe('Thread id from list_feedback.'),
         note: z.string().optional().describe('Optional reply describing the fix, posted first.'),
@@ -159,19 +166,30 @@ export function buildServer(client: SidecarClient): McpServer {
   server.registerTool(
     'mark_story_addressed',
     {
-      title: 'Mark a story addressed',
+      title: 'Mark a component addressed',
       description:
-        'Move a story whose state is changes_requested to addressed, after you have pushed ' +
-        'fixes for it. This puts the story back in front of the human reviewers for sign-off.',
+        'Move a component whose state is changes_requested to addressed, after you have ' +
+        'pushed fixes for it. This puts it back in front of the human reviewers for sign-off. ' +
+        'State moves at the COMPONENT, not the variant: pass any story id belonging to the ' +
+        'component (the CSF file) and every variant in that file moves with it. Reviewers ' +
+        'sign off on components, so a single variant cannot be moved on its own.',
       inputSchema: {
-        storyId: z.string().describe('Storybook story id, e.g. components-button--primary.'),
+        storyId: z
+          .string()
+          .describe(
+            'Any story id belonging to the component, e.g. components-button--primary. ' +
+              'The whole component moves.',
+          ),
         note: z.string().optional().describe('What was fixed; lands in the audit trail.'),
       },
     },
     async ({ storyId, note }) => {
       try {
         const { story } = await client.setStoryStatus(storyId, { to: 'addressed', note });
-        return textResult(`Story ${storyId} is now ${story.state}.`);
+        return textResult(
+          `Component "${story.componentTitle || story.title}" is now ${story.state} ` +
+            `(every variant in ${story.importPath}).`,
+        );
       } catch (err) {
         return errorResult(err);
       }
@@ -181,22 +199,44 @@ export function buildServer(client: SidecarClient): McpServer {
   server.registerTool(
     'list_stories',
     {
-      title: 'List stories and review states',
+      title: 'List components and review states',
       description:
-        'List every story under review with its state and open-thread count. ' +
-        'state=changes_requested is your work queue: stories a human reviewed and asked for ' +
-        'changes on. needs_reconfirm belongs to human reviewers, not you.',
+        'List what is under review, one row per story variant, carrying its component, its ' +
+        'state, its thread counts, and whether its render has moved since a human approved ' +
+        'it. state=changes_requested is your work queue. Rows sharing an importPath are one ' +
+        'component and always share a state.\n\n' +
+        'changedSinceApproval=true means a human approved it and the render has changed ' +
+        'since — often because of something you did. It is a flag for THEM to re-look, not ' +
+        'a task for you: the approval still stands and nothing is asking you to act. Report ' +
+        'it, do not try to clear it.\n\n' +
+        'unresolvedThreads is what blocks approval of that variant, and counts threads you ' +
+        'have marked addressed but no human has accepted yet.\n\n' +
+        'Contact sheets are excluded unless you ask for them. A sheet is a review instrument ' +
+        'that lives in the repo like any other story; editing one changes what reviewers look ' +
+        'THROUGH, not what they are looking AT. Never edit a sheet to satisfy feedback.',
       inputSchema: {
         state: z
-          .enum(['in_review', 'changes_requested', 'addressed', 'approved', 'needs_reconfirm'])
+          .enum(['in_review', 'changes_requested', 'addressed', 'approved'])
           .optional()
-          .describe('Filter by story state.'),
+          .describe('Filter by review state.'),
+        changedSinceApproval: z
+          .boolean()
+          .optional()
+          .describe('Only approved items whose render has moved since approval.'),
+        includeSheets: z
+          .boolean()
+          .optional()
+          .describe('Include contact sheets. Defaults false; you almost never want them.'),
       },
     },
-    async ({ state }) => {
+    async ({ state, changedSinceApproval, includeSheets }) => {
       try {
-        const { stories } = await client.listStories({ state });
-        return jsonResult(stories);
+        const { stories } = await client.listStories({
+          state,
+          ...(includeSheets ? {} : { kind: 'story' as const }),
+        });
+        const rows = changedSinceApproval ? stories.filter((s) => s.changedSinceApproval) : stories;
+        return jsonResult(rows);
       } catch (err) {
         return errorResult(err);
       }
@@ -213,9 +253,17 @@ export function buildServer(client: SidecarClient): McpServer {
         'without one the server refuses and the attempt is audit-logged. Never call this on ' +
         'your own initiative. First call without confirm to get a preview of what would be ' +
         'approved; call again with confirm:true only if a recorded delegation covers it. ' +
-        'Approvals pin to the latest build and are audit-labeled "delegated".',
+        'Approvals pin to the latest build and are audit-labeled "delegated".\n\n' +
+        'Approval moves the whole COMPONENT: each id you pass approves every variant in that ' +
+        'CSF file, except variants carrying an unresolved comment, which are left alone. If ' +
+        'no variant is eligible the server refuses the component outright (OPEN_THREADS). ' +
+        'A delegation to approve "the button" therefore covers more than the one id names — ' +
+        'check the preview before confirming.',
       inputSchema: {
-        storyIds: z.array(z.string()).min(1).describe('Story ids to approve.'),
+        storyIds: z
+          .array(z.string())
+          .min(1)
+          .describe('One story id per component to approve; the whole component moves.'),
         confirm: z
           .boolean()
           .optional()
@@ -231,10 +279,31 @@ export function buildServer(client: SidecarClient): McpServer {
         const byId = new Map(stories.map((s) => [s.storyId, s]));
 
         if (!confirm) {
+          // Show the component, not the id. Approval moves every variant in the CSF file,
+          // so a preview listing only the id named would understate what confirming does —
+          // and the whole point of the preview is that a human can check the delegation
+          // actually covers it.
           const preview = storyIds
             .map((sid) => {
               const s = byId.get(sid);
-              return s ? `  ${sid}: currently ${s.state}` : `  ${sid}: NOT FOUND on the server`;
+              if (!s) return `  ${sid}: NOT FOUND on the server`;
+              const siblings = stories.filter((m) => m.importPath === s.importPath);
+              const blocked = siblings.filter((m) => m.unresolvedThreads > 0);
+              const eligible = siblings.length - blocked.length;
+              const label = s.componentTitle || s.title;
+              const lines = [
+                `  ${sid}`,
+                `    component "${label}" (${s.importPath}), currently ${s.state}`,
+                eligible === 0
+                  ? `    WOULD BE REFUSED: all ${siblings.length} variants have unresolved comments`
+                  : `    would approve ${eligible} of ${siblings.length} variants`,
+              ];
+              if (blocked.length && eligible > 0) {
+                lines.push(
+                  `    left alone (unresolved comments): ${blocked.map((m) => m.storyId).join(', ')}`,
+                );
+              }
+              return lines.join('\n');
             })
             .join('\n');
           const buildLine = build

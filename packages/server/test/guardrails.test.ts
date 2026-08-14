@@ -123,6 +123,26 @@ describe('input guardrails', () => {
     );
   });
 
+  it('orders two builds uploaded in the same millisecond by arrival', () => {
+    // created_at is millisecond ISO, so a scripted double upload can tie. Ordering by it
+    // alone let SQLite hand back the OLDER build as "latest", which silently switched off
+    // changedSinceApproval, pinned approvals to a superseded build, and could land a
+    // reviewer on it from a magic link.
+    const db = openMemoryDb();
+    const s = new Store(db, dataDir);
+    const first = s.ingestBuildZip(zip('one'), { label: 'v1' }, adminP).build;
+    const second = s.ingestBuildZip(zip('two'), { label: 'v2' }, adminP).build;
+
+    // Force the tie rather than racing for it. Two ingests usually land in the same
+    // millisecond but not always, and a test that only sometimes reproduces the
+    // condition it names is a test that will pass while the bug is back.
+    db.prepare('UPDATE builds SET created_at = ?').run(first.createdAt);
+    expect(s.getBuild(second.id).createdAt).toBe(s.getBuild(first.id).createdAt);
+
+    expect(s.latestBuild()!.id).toBe(second.id);
+    expect(s.listBuilds()[0]!.id).toBe(second.id);
+  });
+
   it('sets a strict CSP and no unsafe-inline script on the shell page', async () => {
     const res = await app.request('/review/');
     expect(res.status).toBe(200);

@@ -155,10 +155,19 @@ export class Store {
     return { build, created: true, newStories, reconfirmed };
   }
 
+  /**
+   * Newest first. `rowid` breaks the tie because `created_at` is millisecond ISO and two
+   * builds can land inside one millisecond — a scripted double upload, a CI job pushing
+   * a rebuild, a test. Without the tiebreaker SQLite is free to return either, and the
+   * one it picked was the OLDER build: `changedSinceApproval` then compared a story
+   * against the build it was approved on and reported no change forever, approvals
+   * pinned to a superseded build, and `/review/:token` could land a reviewer on it.
+   * Build ids are random UUIDs, so insertion order is the only thing that can order them.
+   */
   listBuilds(): Build[] {
-    return (this.db.prepare('SELECT * FROM builds ORDER BY created_at DESC').all() as BuildRow[]).map(
-      rowToBuild,
-    );
+    return (
+      this.db.prepare('SELECT * FROM builds ORDER BY created_at DESC, rowid DESC').all() as BuildRow[]
+    ).map(rowToBuild);
   }
 
   getBuild(buildId: string): Build {
@@ -171,7 +180,7 @@ export class Store {
 
   latestBuild(): Build | null {
     const row = this.db
-      .prepare('SELECT * FROM builds ORDER BY created_at DESC LIMIT 1')
+      .prepare('SELECT * FROM builds ORDER BY created_at DESC, rowid DESC LIMIT 1')
       .get() as BuildRow | undefined;
     return row ? rowToBuild(row) : null;
   }
@@ -583,6 +592,11 @@ export class Store {
       story: {
         storyId: story.storyId,
         title: story.title,
+        // The component is what the comment is actually filed against and what a
+        // reviewer or an agent recognises; `title` alone is the variant. Both
+        // consumers declared this field before the payload carried it, so both were
+        // quietly reading undefined and falling back to the variant name.
+        componentTitle: story.componentTitle,
         importPath: story.importPath,
         state: story.state,
       },

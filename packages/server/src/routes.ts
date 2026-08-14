@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { Hono } from 'hono';
 import { setCookie } from 'hono/cookie';
 import { z } from 'zod';
+import type { StoryKind } from '@igility/greenroom-shared';
 import type { Config } from './config.js';
 import type { Store } from './store.js';
 import { HttpError } from './util.js';
@@ -86,7 +87,16 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
   app.get('/api/stories', requirePrincipal(), (c) => {
     const state = c.req.query('state') as (typeof STORY_STATES)[number] | undefined;
     if (state && !STORY_STATES.includes(state)) throw new HttpError(400, `Unknown state ${state}.`);
-    return c.json({ stories: store.listStories({ state }) });
+    // `kind` exists for the agent. A contact sheet is a review instrument that lives in
+    // the client's repo like any other story, so an agent handed the unfiltered list can
+    // read a comment routed to a sheet and go edit the sheet — changing what reviewers
+    // look through rather than what they are looking at. The reviewer shell wants sheets
+    // and omits this; nothing else should.
+    const kind = c.req.query('kind') as StoryKind | undefined;
+    if (kind && kind !== 'story' && kind !== 'sheet') {
+      throw new HttpError(400, `Unknown kind ${kind}.`);
+    }
+    return c.json({ stories: store.listStories({ state, kind }) });
   });
 
   app.get('/api/stories/:storyId', requirePrincipal(), (c) => {

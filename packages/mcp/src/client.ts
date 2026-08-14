@@ -3,6 +3,7 @@ import type {
   Message,
   Pin,
   Story,
+  StoryKind,
   StoryState,
   Thread,
   ThreadState,
@@ -11,11 +12,22 @@ import type {
 /** One thread of human review feedback plus the story it hangs on. */
 export interface FeedbackItem {
   thread: Thread;
-  story: Pick<Story, 'storyId' | 'title' | 'importPath' | 'state'>;
+  story: Pick<Story, 'storyId' | 'title' | 'componentTitle' | 'importPath' | 'state'>;
   messages: Message[];
 }
 
-export type StoryWithOpenThreads = Story & { openThreads: number };
+export type StoryWithCounts = Story & {
+  /** Threads still awaiting a first response. The reviewer's attention badge. */
+  openThreads: number;
+  /**
+   * Threads no human has accepted — including ones an agent has already answered and
+   * marked addressed. This is what blocks approval, so it is the count an agent needs
+   * to predict whether its work has actually cleared the variant.
+   */
+  unresolvedThreads: number;
+  /** Approved, and the render has moved since. Never true for anything else. */
+  changedSinceApproval: boolean;
+};
 
 export class SidecarError extends Error {
   constructor(
@@ -105,9 +117,14 @@ export class SidecarClient {
     });
   }
 
-  listStories(filter: { state?: StoryState } = {}): Promise<{ stories: StoryWithOpenThreads[] }> {
-    const qs = filter.state ? `?state=${filter.state}` : '';
-    return this.request(`/api/stories${qs}`);
+  listStories(
+    filter: { state?: StoryState; kind?: StoryKind } = {},
+  ): Promise<{ stories: StoryWithCounts[] }> {
+    const params = new URLSearchParams();
+    if (filter.state) params.set('state', filter.state);
+    if (filter.kind) params.set('kind', filter.kind);
+    const qs = params.toString();
+    return this.request(`/api/stories${qs ? `?${qs}` : ''}`);
   }
 
   setStoryStatus(
@@ -138,4 +155,4 @@ export class SidecarClient {
   }
 }
 
-export type { Build, Message, Pin, Story, StoryState, Thread, ThreadState };
+export type { Build, Message, Pin, Story, StoryKind, StoryState, Thread, ThreadState };
