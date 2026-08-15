@@ -109,7 +109,7 @@ const ACTIONS: Record<StoryState, ActionDef[]> = {
  * and the button went with it. The panel then told a reviewer their component had
  * changed and gave them nothing to do about it but reopen the whole thing.
  */
-function actionsFor(state: StoryState, changed: boolean): ActionDef[] {
+export function actionsFor(state: StoryState, changed: boolean): ActionDef[] {
   if (state === 'approved' && changed) {
     return [{ ...APPROVE, label: 'Approve again' }, ...ACTIONS.approved];
   }
@@ -410,7 +410,9 @@ const Thread: React.FC<{
   );
 };
 
-const Panel: React.FC<{ active: boolean }> = ({ active }) => {
+/** Exported for tests. The addon still mounts it through `addons.add` below; nothing
+ *  else should import it. */
+export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const api = useStorybookApi();
   /**
    * `parameters.greenroom` from the host's Storybook config.

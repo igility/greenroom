@@ -39,7 +39,7 @@ export interface BuildUploadResult {
 
 export interface FeedbackItem {
   thread: Thread;
-  story: Pick<Story, 'storyId' | 'title' | 'importPath' | 'state'>;
+  story: Pick<Story, 'storyId' | 'title' | 'componentTitle' | 'importPath' | 'state'>;
   messages: Message[];
 }
 
