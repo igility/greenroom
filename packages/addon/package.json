@@ -39,6 +39,7 @@
     "@medv/finder": "^4.0.2",
     "@storybook/icons": "^2.1.0",
     "@types/react": "^19.2.0",
+    "jsdom": "^30.0.1",
     "modern-screenshot": "^4.7.0",
     "react": "^19.2.8",
     "storybook": "^10.5.7",
