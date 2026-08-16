@@ -55,7 +55,6 @@ if (command === 'serve') {
     error?: string;
     created?: boolean;
     newStories?: number;
-    reconfirmed?: number;
     build?: { id: string; label: string; storyCount: number };
   };
   if (!res.ok) {
@@ -66,7 +65,7 @@ if (command === 'serve') {
     console.log(`Identical build already uploaded — ${json.build?.id} ("${json.build?.label}"). Nothing changed.`);
   } else {
     console.log(
-      `Build ${json.build?.id} ("${json.build?.label}") — ${json.build?.storyCount} stories, ${json.newStories} new, ${json.reconfirmed} approval(s) now need re-confirmation.`,
+      `Build ${json.build?.id} ("${json.build?.label}") — ${json.build?.storyCount} stories, ${json.newStories} new.`,
     );
   }
 } else {

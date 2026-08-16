@@ -40,7 +40,6 @@ const HUMAN_TRANSITIONS: Record<StoryState, StoryState[]> = {
   // depends on evidence this table cannot see, so the store refuses the no-op case —
   // here the edge simply has to exist, or a flagged component can never be cleared.
   approved: ['in_review', 'changes_requested', 'approved'],
-  needs_reconfirm: ['approved', 'changes_requested', 'in_review'],
 };
 
 /** Agents may move work into review states, never grant approval on their own. */
@@ -49,7 +48,6 @@ const AGENT_TRANSITIONS: Record<StoryState, StoryState[]> = {
   changes_requested: ['addressed'],
   addressed: [],
   approved: [],
-  needs_reconfirm: [],
 };
 
 /** Additional transitions an agent gains under an active recorded delegation. */
@@ -60,7 +58,6 @@ const AGENT_DELEGATED_TRANSITIONS: Record<StoryState, StoryState[]> = {
   // Re-confirming is the same act as approving, on a render that moved, so it carries
   // the same authorization and the same "delegated" label in the audit.
   approved: ['approved'],
-  needs_reconfirm: ['approved'],
 };
 
 export function canTransition(

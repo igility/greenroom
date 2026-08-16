@@ -227,8 +227,9 @@ describe('review cycle end to end', () => {
     const out = await res.json();
     expect(out.created).toBe(true);
     // Uploading is not evidence about any component. Nothing is unsettled until a
-    // render actually shows a difference.
-    expect(out.reconfirmed).toBe(0);
+    // render actually shows a difference — and the upload result no longer even carries
+    // a re-confirmation count, because there is no longer anything that could raise it.
+    expect(out).not.toHaveProperty('reconfirmed');
     buildB = out.build.id;
 
     const still = await (
@@ -329,7 +330,7 @@ describe('review cycle end to end', () => {
     expect(res.status).toBe(200);
     const out = await res.json();
     expect(out.created).toBe(false);
-    expect(out.reconfirmed).toBe(0);
+    expect(out).not.toHaveProperty('reconfirmed');
   });
 
   it('serves build static files to an authenticated principal', async () => {

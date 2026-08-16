@@ -61,7 +61,6 @@ const STATE_LABEL: Record<StoryState, string> = {
   changes_requested: 'Changes requested',
   addressed: 'Addressed — pending re-review',
   approved: 'Approved',
-  needs_reconfirm: 'Needs re-confirmation',
 };
 
 const STATE_COLOR: Record<StoryState, string> = {
@@ -69,7 +68,6 @@ const STATE_COLOR: Record<StoryState, string> = {
   changes_requested: '#d97706',
   addressed: '#2563eb',
   approved: '#16a34a',
-  needs_reconfirm: '#dc2626',
 };
 
 /** The label is the hover tooltip, so it stays the full sentence rather than being
@@ -96,7 +94,6 @@ const ACTIONS: Record<StoryState, ActionDef[]> = {
   ],
   addressed: [APPROVE, REQUEST],
   approved: [{ label: 'Reopen', to: 'in_review', icon: <UndoIcon /> }, REQUEST],
-  needs_reconfirm: [{ ...APPROVE, label: 'Approve again' }, REQUEST],
 };
 
 /**
@@ -524,9 +521,6 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   /** Stories carrying a comment nobody has resolved. The server refuses to approve these;
    *  the button is disabled so the refusal never has to be discovered by being told. */
   const [blocked, setBlocked] = useState<Map<string, number>>(new Map());
-  const [verdicts, setVerdicts] = useState<Map<string, 'likely_unchanged' | 'changed' | 'unknown'>>(
-    new Map(),
-  );
   /** How many renditions each component has, keyed by its CSF file. Approving covers all
    *  of them, so the count is disclosed rather than left for the reviewer to discover. */
   const [variantsByFile, setVariantsByFile] = useState<Map<string, number>>(new Map());
@@ -659,10 +653,6 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             }, new Map<string, number>()),
           )),
       )
-      .catch(() => undefined);
-    client
-      .reconfirmQueue()
-      .then((r) => live && setVerdicts(new Map(r.items.map((i) => [i.story.storyId, i.verdict]))))
       .catch(() => undefined);
     return () => {
       live = false;

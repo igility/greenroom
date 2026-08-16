@@ -34,18 +34,12 @@ export interface BuildUploadResult {
   build: Build;
   created: boolean;
   newStories: number;
-  reconfirmed: number;
 }
 
 export interface FeedbackItem {
   thread: Thread;
   story: Pick<Story, 'storyId' | 'title' | 'componentTitle' | 'importPath' | 'state'>;
   messages: Message[];
-}
-
-export interface ReconfirmItem {
-  story: Story;
-  verdict: FingerprintVerdict;
 }
 
 /** Greenroom itself, for state changes made on evidence rather than by anybody. Never
@@ -68,7 +62,7 @@ export class Store {
       .prepare('SELECT * FROM builds WHERE manifest_hash = ?')
       .get(hash) as BuildRow | undefined;
     if (existing) {
-      return { build: rowToBuild(existing), created: false, newStories: 0, reconfirmed: 0 };
+      return { build: rowToBuild(existing), created: false, newStories: 0 };
     }
 
     const stories = parseStoryIndex(entries);
@@ -82,7 +76,6 @@ export class Store {
     writeEntries(entries, path.resolve(this.dataDir, storagePath));
 
     let newStories = 0;
-    let reconfirmed = 0;
     const at = nowIso();
 
     this.db.transaction(() => {
@@ -152,7 +145,7 @@ export class Store {
     })();
 
     const build = this.getBuild(buildId);
-    return { build, created: true, newStories, reconfirmed };
+    return { build, created: true, newStories };
   }
 
   /**
@@ -989,29 +982,6 @@ export class Store {
     ).n;
   }
 
-  /** Stories awaiting re-confirmation in `buildId`, sorted worst-first, each with a
-   * fingerprint verdict. The verdict orders the queue — it never changes state. */
-  reconfirmQueue(buildId: string): ReconfirmItem[] {
-    this.getBuild(buildId);
-    const rows = this.db
-      .prepare("SELECT * FROM stories WHERE state = 'needs_reconfirm' AND last_seen_build_id = ?")
-      .all(buildId) as StoryRow[];
-    const fp = this.db.prepare(
-      'SELECT hash FROM fingerprints WHERE story_id = ? AND build_id = ? AND region_key = ?',
-    );
-    const items = rows.map((r) => {
-      const story = rowToStory(r);
-      const current = fp.get(story.storyId, buildId, ROOT_REGION) as { hash: string } | undefined;
-      const anchor = story.anchorBuildId
-        ? (fp.get(story.storyId, story.anchorBuildId, ROOT_REGION) as { hash: string } | undefined)
-        : undefined;
-      let verdict: FingerprintVerdict = 'unknown';
-      if (current && anchor) verdict = current.hash === anchor.hash ? 'likely_unchanged' : 'changed';
-      return { story, verdict };
-    });
-    const rank: Record<FingerprintVerdict, number> = { changed: 0, unknown: 1, likely_unchanged: 2 };
-    return items.sort((a, b) => rank[a.verdict] - rank[b.verdict]);
-  }
 
   // ── reviewers, magic links, sessions ──────────────────────────────────────
 

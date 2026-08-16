@@ -8,7 +8,8 @@ describe('canTransition', () => {
   it('lets humans walk the review lifecycle', () => {
     expect(canTransition('reviewer', 'in_review', 'changes_requested', disabled).allowed).toBe(true);
     expect(canTransition('reviewer', 'in_review', 'approved', disabled).allowed).toBe(true);
-    expect(canTransition('reviewer', 'needs_reconfirm', 'approved', disabled).allowed).toBe(true);
+    // Re-confirmation is now approved → approved; the state it used to run through is gone.
+    expect(canTransition('reviewer', 'approved', 'approved', disabled).allowed).toBe(true);
     expect(canTransition('admin', 'approved', 'in_review', disabled).allowed).toBe(true);
   });
 
@@ -42,7 +43,7 @@ describe('canTransition', () => {
   });
 
   it('blocks agent approvals with the warning when no delegation is recorded', () => {
-    for (const from of ['in_review', 'addressed', 'needs_reconfirm'] as const) {
+    for (const from of ['in_review', 'addressed', 'approved'] as const) {
       const d = canTransition('agent', from, 'approved', disabled);
       expect(d.allowed).toBe(false);
       expect(d.reason).toBe('AGENT_APPROVAL_DISABLED');
@@ -51,7 +52,7 @@ describe('canTransition', () => {
   });
 
   it('allows agent approvals under an active delegation', () => {
-    expect(canTransition('agent', 'needs_reconfirm', 'approved', delegated).allowed).toBe(true);
+    expect(canTransition('agent', 'approved', 'approved', delegated).allowed).toBe(true);
     expect(canTransition('agent', 'addressed', 'approved', delegated).allowed).toBe(true);
   });
 

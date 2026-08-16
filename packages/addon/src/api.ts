@@ -103,16 +103,6 @@ export class Sidecar {
     }>('GET', '/api/stories');
   }
 
-  /** Which approvals a new build unsettled, and whether each component's render actually
-   *  changed. Without it the panel can say a story needs re-confirming but not why, which
-   *  reads as the tool having forgotten a decision the reviewer definitely made. */
-  reconfirmQueue() {
-    return this.req<{
-      buildId: string;
-      items: { story: Story; verdict: 'likely_unchanged' | 'changed' | 'unknown' }[];
-    }>('GET', '/api/reconfirm-queue');
-  }
-
   /** Other components whose render has also moved since they were approved. Offered
    *  only after the reviewer has re-confirmed one, so the decision rests on something
    *  they just looked at. */

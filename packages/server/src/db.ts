@@ -293,6 +293,55 @@ const MIGRATIONS: Migration[] = [
       }
     }
   },
+
+  /*
+   * v7 — retire `needs_reconfirm`.
+   *
+   * It existed for one rule: a new build demoted every approval into it, and the
+   * reviewer re-affirmed each one. That rule is gone. A build arriving no longer
+   * unsettles anything; a render that has moved since its sign-off is reported as a
+   * flag instead, and re-confirmation happens through approved → approved.
+   *
+   * So nothing can produce the state any more, and the rows still carrying it are
+   * artifacts of a rule we withdrew. They are restored to `approved` rather than
+   * pushed to `in_review`, because that is what the current model would have left
+   * them as: a human did approve them, against the build named in their anchor, and
+   * the only reason they are not approved now is a demotion we have since decided was
+   * wrong. Their anchors survived the demotion, so the restoration is exact — and
+   * `changedSinceApproval` will then say, honestly, whether the render has moved.
+   *
+   * An audit row is written for each, because the trail must never show a story
+   * arriving at `approved` with nothing explaining how. It is attributed to Greenroom
+   * itself and labelled `carried`: no human looked at anything today, and the sign-off
+   * being restored is the one they already gave.
+   */
+  (db) => {
+    const rows = db
+      .prepare("SELECT story_id, anchor_build_id FROM stories WHERE state = 'needs_reconfirm'")
+      .all() as { story_id: string; anchor_build_id: string | null }[];
+    if (!rows.length) return;
+    const restore = db.prepare("UPDATE stories SET state = 'approved' WHERE story_id = ?");
+    const event = db.prepare(
+      `INSERT INTO status_events
+         (id, story_id, from_state, to_state, principal_kind, principal_id, principal_name,
+          approval_mode, delegation_id, build_id, note, created_at)
+       VALUES (?, ?, 'needs_reconfirm', 'approved', 'admin', 'greenroom', 'Greenroom',
+               'carried', NULL, ?, ?, ?)`,
+    );
+    const at = new Date().toISOString();
+    for (const r of rows) {
+      restore.run(r.story_id);
+      event.run(
+        `evt-v7-${r.story_id}`,
+        r.story_id,
+        r.anchor_build_id,
+        'Restored to the approval this story already had. The "needs re-confirmation" ' +
+          'state was produced by a build-arrival demotion that has been withdrawn; a ' +
+          'changed render is now reported as a flag instead. No new review took place.',
+        at,
+      );
+    }
+  },
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the

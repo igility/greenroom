@@ -9,7 +9,7 @@ import type { Store } from './store.js';
 import { HttpError } from './util.js';
 import { requirePrincipal, principalOf, SESSION_COOKIE, type AppEnv } from './auth.js';
 
-const STORY_STATES = ['in_review', 'changes_requested', 'addressed', 'approved', 'needs_reconfirm'] as const;
+const STORY_STATES = ['in_review', 'changes_requested', 'addressed', 'approved'] as const;
 const THREAD_STATES = ['open', 'addressed', 'resolved'] as const;
 
 const pinSchema = z.object({
@@ -142,12 +142,6 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
       becauseOf: input.becauseOf,
     });
     return c.json(result);
-  });
-
-  app.get('/api/reconfirm-queue', requirePrincipal(), (c) => {
-    const buildId = c.req.query('buildId') ?? store.latestBuild()?.id;
-    if (!buildId) throw new HttpError(400, 'No builds uploaded yet.');
-    return c.json({ buildId, items: store.reconfirmQueue(buildId) });
   });
 
   // ── threads + feedback ────────────────────────────────────────────────────

@@ -1,11 +1,14 @@
-/** Per-story review lifecycle. `needs_reconfirm` is the reviewer's queue after a new
- * build invalidates a build-pinned approval; `changes_requested` is the agent's queue. */
-export type StoryState =
-  | 'in_review'
-  | 'changes_requested'
-  | 'addressed'
-  | 'approved'
-  | 'needs_reconfirm';
+/**
+ * Per-story review lifecycle. `changes_requested` is the agent's queue.
+ *
+ * There was a fifth state, `needs_reconfirm`, holding approvals that a new build had
+ * demoted. That demotion is gone: a build arriving no longer unsettles a decision
+ * somebody made, and a render that has moved since its sign-off is reported as a flag
+ * on the still-approved story instead. Re-confirming is `approved` → `approved`, which
+ * advances the anchor to the build the reviewer just looked at. Migration v7 restored
+ * the rows that were still sitting in the retired state.
+ */
+export type StoryState = 'in_review' | 'changes_requested' | 'addressed' | 'approved';
 
 export type ThreadState = 'open' | 'addressed' | 'resolved';
 

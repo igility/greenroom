@@ -49,6 +49,14 @@ function seedV1(dataDir: string) {
       story_id TEXT NOT NULL, build_id TEXT NOT NULL, hash TEXT NOT NULL,
       created_at TEXT NOT NULL, PRIMARY KEY (story_id, build_id)
     );
+    -- Real v1 has this; the fixture omitted it until a migration needed to write to it,
+    -- at which point the seed stopped representing any database that ever existed.
+    CREATE TABLE status_events (
+      id TEXT PRIMARY KEY, story_id TEXT NOT NULL, from_state TEXT, to_state TEXT NOT NULL,
+      principal_kind TEXT NOT NULL, principal_id TEXT NOT NULL, principal_name TEXT NOT NULL,
+      approval_mode TEXT, delegation_id TEXT, build_id TEXT, note TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
   db.prepare(
     `INSERT INTO builds (id, manifest_hash, label, git_sha, story_count, storage_path, created_at)
@@ -155,6 +163,66 @@ describe('v1 → current migration', () => {
     expect(
       (db.prepare('SELECT COUNT(*) AS n FROM fingerprints').get() as { n: number }).n,
     ).toBe(1);
+    db.close();
+  });
+  /**
+   * v7 retires `needs_reconfirm`. The rows still sitting in it were put there by a
+   * build-arrival demotion that has since been withdrawn, so they are restored to the
+   * approval they already had rather than pushed into `in_review` — a human did approve
+   * them, against the build named in their anchor, and the only reason they were not
+   * approved is a rule we decided was wrong.
+   */
+  it('restores a story stranded in needs_reconfirm to its approval, with an audit row', () => {
+    seedV1(dir);
+    const seeded = new Database(path.join(dir, 'greenroom.db'));
+    seeded
+      .prepare("UPDATE stories SET state = 'needs_reconfirm' WHERE story_id = ?")
+      .run('components-button--primary');
+    seeded.close();
+
+    const db = openDb(dir);
+    const story = db
+      .prepare('SELECT state, anchor_build_id FROM stories WHERE story_id = ?')
+      .get('components-button--primary') as { state: string; anchor_build_id: string };
+    expect(story.state).toBe('approved');
+    // The anchor is untouched: it still names the build the reviewer actually saw, not
+    // whatever happens to be newest.
+    expect(story.anchor_build_id).toBe('b1');
+
+    // A story must never arrive at `approved` with nothing in the trail explaining how.
+    const event = db
+      .prepare(
+        `SELECT from_state, to_state, approval_mode, principal_id, note FROM status_events
+          WHERE story_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get('components-button--primary') as {
+      from_state: string;
+      to_state: string;
+      approval_mode: string;
+      principal_id: string;
+      note: string;
+    };
+    expect(event.from_state).toBe('needs_reconfirm');
+    expect(event.to_state).toBe('approved');
+    // `carried`, not `direct`: nobody looked at anything, the sign-off being restored is
+    // the one they already gave.
+    expect(event.approval_mode).toBe('carried');
+    expect(event.principal_id).toBe('greenroom');
+    expect(event.note).toMatch(/No new review took place/);
+    db.close();
+  });
+
+  it('leaves a database with no stranded rows completely alone', () => {
+    seedV1(dir);
+    const db = openDb(dir);
+    expect(
+      (db.prepare('SELECT COUNT(*) AS n FROM status_events').get() as { n: number }).n,
+    ).toBe(0);
+    expect(
+      (db.prepare('SELECT state FROM stories WHERE story_id = ?').get('components-button--primary') as {
+        state: string;
+      }).state,
+    ).toBe('approved');
     db.close();
   });
 });
