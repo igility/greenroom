@@ -888,9 +888,9 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
                 padding: '3px 8px',
                 fontSize: 10,
                 lineHeight: 1.5,
-                // Docked to the side the panel gets narrow, and the longer labels —
-                // "Needs re-confirmation", "Addressed — pending re-review" — wrapped the
-                // pill into a two-line blob. It is a status marker, not a paragraph.
+                // Docked to the side the panel gets narrow, and the longest label —
+                // "Addressed — pending re-review" — wrapped the pill into a two-line
+                // blob. It is a status marker, not a paragraph.
                 whiteSpace: 'nowrap',
               }}
             >
