@@ -11,6 +11,13 @@ export interface Config {
   adminKeyGenerated: boolean;
   /** Directory holding the reviewer shell's static files. */
   shellDir: string;
+  /**
+   * Shared secret a CDN attaches to every origin request, proving the request came
+   * through the edge rather than straight at the origin. Empty disables the check —
+   * which is what local development wants, and what `cli.ts` refuses to allow in
+   * production.
+   */
+  edgeSecret: string;
 }
 
 /** Works from both src/ (tests via vitest) and dist/ (built CLI) — the shell
@@ -31,5 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminKeyGenerated = true;
   }
 
-  return { dataDir, port, publicUrl, adminKey, adminKeyGenerated, shellDir };
+  const edgeSecret = env.GREENROOM_EDGE_SECRET ?? '';
+
+  return { dataDir, port, publicUrl, adminKey, adminKeyGenerated, shellDir, edgeSecret };
 }

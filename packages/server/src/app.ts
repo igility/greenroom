@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Config } from './config.js';
@@ -21,6 +22,42 @@ export function createApp(store: Store, config: Config) {
     console.error(err);
     return c.json({ error: 'Internal error.' }, 500);
   });
+
+  /**
+   * THE EDGE CHECK, AND IT IS FIRST ON PURPOSE.
+   *
+   * Greenroom's production shape is a CDN in front of a platform origin, and the
+   * platforms this runs on cannot restrict who reaches that origin — Railway states
+   * plainly that it offers no inbound IP allowlisting. So the origin hostname is
+   * reachable by anyone who finds it, and a custom domain publishes itself in
+   * Certificate Transparency within minutes of being attached. Finding it is not the
+   * hard part.
+   *
+   * A request arriving that way skips every rule the CDN enforces: the firewall, the
+   * rate limits, the security headers. This middleware is what makes those controls
+   * real rather than decorative — an IP allowlist at the edge means nothing if the
+   * origin answers the same request directly.
+   *
+   * It runs ahead of CORS, caching, `principalMiddleware` and every route, so an
+   * unverified request never reaches routing, a session lookup, or the static build
+   * handler.
+   *
+   * 404 rather than 403: a 403 announces that something is here. A 404 leaves the
+   * origin indistinguishable from an empty host and stops the response telling an
+   * attacker which paths exist.
+   */
+  if (config.edgeSecret) {
+    const expected = Buffer.from(config.edgeSecret);
+    app.use(async (c, next) => {
+      const given = Buffer.from(c.req.header('x-origin-verify') ?? '');
+      // Length is checked first because timingSafeEqual throws on a mismatch — and
+      // length is not the secret, so leaking it costs nothing.
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+        return c.text('Not Found', 404);
+      }
+      await next();
+    });
+  }
 
   // Bearer-token API access from the addon panel in `storybook dev` is
   // cross-origin; reviewer cookies never ride on /api/* CORS requests because

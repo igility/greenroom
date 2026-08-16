@@ -16,6 +16,26 @@ if (command === 'serve') {
       `GREENROOM_ADMIN_KEY not set — generated for this run:\n  ${config.adminKey}\nSet it in the environment to keep a stable key.`,
     );
   }
+
+  /*
+   * Fail closed, and do it here rather than in loadConfig so tests and local runs are
+   * unaffected. A production deploy that loses this variable would otherwise serve an
+   * origin anyone can reach, and it would look completely healthy while doing it —
+   * which is the failure you find out about from someone else.
+   */
+  if (!config.edgeSecret && process.env.NODE_ENV === 'production') {
+    console.error(
+      'GREENROOM_EDGE_SECRET is not set and NODE_ENV=production.\n' +
+        'Refusing to start: the origin would accept requests that bypassed the CDN.\n' +
+        'Set it to the same value the CDN attaches as the x-origin-verify header.',
+    );
+    process.exit(1);
+  }
+  console.log(
+    config.edgeSecret
+      ? 'edge check: ON — requests must carry a matching x-origin-verify header'
+      : 'edge check: off — no GREENROOM_EDGE_SECRET set (fine for local development)',
+  );
   const store = new Store(openDb(config.dataDir), config.dataDir);
   serve({ fetch: createApp(store, config).fetch, port: config.port }, (info) => {
     console.log(`greenroom sidecar listening on http://localhost:${info.port}`);
