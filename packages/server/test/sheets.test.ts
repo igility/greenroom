@@ -388,3 +388,81 @@ describe('render reports: membership and per-region fingerprints', () => {
     expect(store.fingerprintCount(a.build.id)).toBe(1);
   });
 });
+
+/**
+ * A component is fingerprinted two ways — as its own story, and as a tile when a sheet
+ * showing it renders. The tile hashes were always being written, but under the SHEET's
+ * story id, while the change check looked for a root hash under the COMPONENT's id. The
+ * evidence was in the table and the lookup went somewhere else, so the flag stayed
+ * silent for every component nobody had opened individually on two builds — 634 of 640
+ * on the reference build.
+ *
+ * That matters because walking the sheets is how the review is actually done: one sheet
+ * visit fingerprints every component on it, which is precisely the pass where a reviewer
+ * is approving things.
+ */
+describe('changed-since-approval sees what a sheet render recorded', () => {
+  /** Render the sheet on `buildId`, giving each tile the hash supplied. */
+  const renderSheet = (buildId: string, tiles: Record<string, string>) =>
+    store.putRenderReport(SHEET, buildId, {
+      hash: `sheet-${buildId}`,
+      regions: Object.entries(tiles).map(([regionKey, hash]) => ({ regionKey, hash })),
+    });
+
+  it('flags a component whose tile hash moved, though it was never opened on its own', () => {
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
+    renderSheet(a.build.id, { [INPUT]: 'input-v1', [SELECT]: 'select-v1' });
+    store.setStoryState(INPUT, 'approved', admin, { buildId: a.build.id });
+
+    const b = store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
+    renderSheet(b.build.id, { [INPUT]: 'input-v2-restyled', [SELECT]: 'select-v1' });
+
+    expect(store.changedSinceApproval(store.getStory(INPUT))).toBe(true);
+    // And the one that did not move stays quiet — the check is per component, not
+    // "something on this sheet changed".
+    store.setStoryState(SELECT, 'approved', admin, { buildId: b.build.id });
+    expect(store.changedSinceApproval(store.getStory(SELECT))).toBe(false);
+  });
+
+  it('never compares a tile hash against a story hash', () => {
+    // The trap in fixing this. A component hashed inside its tile and hashed as its own
+    // story are different markup — the tile adds the card and the name row — so the two
+    // hashes differ even when nothing changed. A naive fallback reports a change for
+    // every component a reviewer opens directly after seeing it on a sheet.
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
+    renderSheet(a.build.id, { [INPUT]: 'as-a-tile' });
+    store.setStoryState(INPUT, 'approved', admin, { buildId: a.build.id });
+
+    const b = store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
+    // Opened on its own this time, and genuinely unchanged — but its own markup hashes
+    // to something quite different from the tile that wrapped it.
+    store.putRenderReport(INPUT, b.build.id, { hash: 'as-its-own-story' });
+
+    expect(store.changedSinceApproval(store.getStory(INPUT))).toBe(false);
+  });
+
+  it('prefers the direct render when both a story hash and a tile hash exist', () => {
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
+    renderSheet(a.build.id, { [INPUT]: 'tile-v1' });
+    store.putRenderReport(INPUT, a.build.id, { hash: 'own-v1' });
+    store.setStoryState(INPUT, 'approved', admin, { buildId: a.build.id });
+
+    const b = store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
+    // The sheet says nothing moved; the component's own render says it did. The direct
+    // render is the sharper evidence and wins.
+    renderSheet(b.build.id, { [INPUT]: 'tile-v1' });
+    store.putRenderReport(INPUT, b.build.id, { hash: 'own-v2' });
+
+    expect(store.changedSinceApproval(store.getStory(INPUT))).toBe(true);
+  });
+
+  it('stays silent when no source was recorded on both builds', () => {
+    const a = store.ingestBuildZip(zip('a'), { label: 'v1' }, admin);
+    renderSheet(a.build.id, { [INPUT]: 'input-v1' });
+    store.setStoryState(INPUT, 'approved', admin, { buildId: a.build.id });
+    // Nothing rendered on the new build at all. Unrendered tells us nothing, and a
+    // guess would be worse than saying nothing.
+    store.ingestBuildZip(zip('b'), { label: 'v2' }, admin);
+    expect(store.changedSinceApproval(store.getStory(INPUT))).toBe(false);
+  });
+});

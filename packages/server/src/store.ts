@@ -847,17 +847,64 @@ export class Store {
     if (story.state !== 'approved' || !story.anchorBuildId) return false;
     const latest = this.latestBuild();
     if (!latest || latest.id === story.anchorBuildId) return false;
-    const fp = this.db.prepare(
-      'SELECT hash FROM fingerprints WHERE story_id = ? AND build_id = ? AND region_key = ?',
-    );
-    const now = fp.get(story.storyId, latest.id, ROOT_REGION) as { hash: string } | undefined;
-    const then = fp.get(story.storyId, story.anchorBuildId, ROOT_REGION) as
-      | { hash: string }
-      | undefined;
-    // Unrendered on this build tells us nothing, and guessing would be worse than
-    // saying nothing.
-    if (!now || !then) return false;
-    return now.hash !== then.hash;
+
+    const now = this.hashesOn(story.storyId, latest.id);
+    const then = this.hashesOn(story.storyId, story.anchorBuildId);
+
+    // Compare like with like. A component hashed as its own story and the same component
+    // hashed as a tile on a sheet are different markup — the tile carries the card, the
+    // name row, whatever the sheet wraps it in — so the two hashes never match even when
+    // nothing changed. Comparing across sources would report a change on every component
+    // a reviewer happened to open directly after seeing it on a sheet.
+    for (const [source, hash] of now) {
+      const before = then.get(source);
+      if (before !== undefined) return hash !== before;
+    }
+
+    // No source recorded on both builds. Unrendered tells us nothing, and guessing would
+    // be worse than saying nothing.
+    return false;
+  }
+
+  /**
+   * Every hash recorded for a story on a build, keyed by where it was observed.
+   *
+   * A story is hashed in two quite different ways, and until now only the first counted:
+   *
+   *   - as itself, when someone opens its own page      → key `__root__`
+   *   - as a tile, when a contact sheet showing it renders → key `sheet:<sheet story id>`
+   *
+   * The tile hashes were being written all along — `putRenderReport` records one per
+   * declared region — but stored under the SHEET's story id, while this check looked
+   * only for a root hash under the COMPONENT's id. So the evidence sat in the table and
+   * the lookup went somewhere else, and `changedSinceApproval` stayed silent for every
+   * component nobody had opened individually on two separate builds. On the reference
+   * build that was 634 of 640 stories: the flag was very nearly inert.
+   *
+   * It matters because sheets are how the review is actually walked. One visit to a
+   * contact sheet fingerprints every component on it, so the anchor side comes for free
+   * as a by-product of reviewing — which is exactly the pass where the reviewer is
+   * approving things.
+   *
+   * Ordered root-first so a direct render, the sharper evidence, wins when both exist.
+   */
+  private hashesOn(storyId: string, buildId: string): Map<string, string> {
+    const rows = this.db
+      .prepare(
+        `SELECT story_id, region_key, hash FROM fingerprints
+          WHERE build_id = ? AND ((story_id = ? AND region_key = ?) OR region_key = ?)
+          ORDER BY CASE WHEN region_key = ? THEN 0 ELSE 1 END, story_id`,
+      )
+      .all(buildId, storyId, ROOT_REGION, storyId, ROOT_REGION) as {
+      story_id: string;
+      region_key: string;
+      hash: string;
+    }[];
+    const out = new Map<string, string>();
+    for (const r of rows) {
+      out.set(r.region_key === ROOT_REGION ? ROOT_REGION : `sheet:${r.story_id}`, r.hash);
+    }
+    return out;
   }
 
   private writeFingerprint(
