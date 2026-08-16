@@ -276,4 +276,36 @@ describe('input guardrails', () => {
     expect(csp).not.toContain("script-src 'self' 'unsafe-inline'");
     expect(csp).toContain("img-src 'self' data:");
   });
+  /**
+   * Greenroom is meant to sit behind a CDN. Until these headers existed it sent no cache
+   * directive at all, so whether a client's data got cached was decided entirely by CDN
+   * configuration this service never sees.
+   */
+  it('forbids any cache from storing an API response', async () => {
+    const res = await app.request('/api/health');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    // Belt and braces for an intermediary that ignores no-store: the answer depends on
+    // who asked, and /api/stories is the same URL for every reviewer.
+    expect(res.headers.get('vary')).toMatch(/Authorization/);
+  });
+
+  it('applies no-store to an authenticated API response too, not just health', async () => {
+    store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+    const res = await app.request('/api/stories', { headers: asAdmin });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('lets a browser cache build assets, but never a shared cache', async () => {
+    const build = store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+    const res = await app.request(`/builds/${build.build.id}/iframe.html`, { headers: asAdmin });
+    expect(res.status).toBe(200);
+    const cc = res.headers.get('cache-control') ?? '';
+    // `private`, because these are a client's unreleased design system behind a login.
+    // A shared cache holding them would serve them from an edge where the authorization
+    // check no longer runs.
+    expect(cc).toContain('private');
+    expect(cc).not.toContain('public');
+    expect(cc).toContain('immutable');
+  });
 });
