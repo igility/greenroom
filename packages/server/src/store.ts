@@ -1004,6 +1004,59 @@ export class Store {
     );
   }
 
+  /**
+   * Remove a reviewer who never used their link, and everything that let them in.
+   *
+   * Exists because reviewers accumulate: a smoke test during setup, a throwaway used to
+   * check a flow, a name entered twice. Left in the list they are indistinguishable from
+   * real people, and a stray one holding `approver` is a live credential for signing off
+   * a client's design.
+   *
+   * 🔴 It REFUSES if the reviewer left any mark — a message or a status event. That is
+   * not a safety rail to be worked around; it is the point. Comments and approvals carry
+   * the author's name denormalised, so the row survives independently of this table, and
+   * deleting the person would leave a trail signed by someone who does not appear in the
+   * reviewer list. An audit trail that names people who cannot be looked up is worse than
+   * one that names people you would rather were tidier.
+   *
+   * So this is only ever able to remove someone who has done nothing, which is exactly
+   * the case it was written for. Anyone who participated stays, permanently, by design.
+   */
+  deleteReviewer(reviewerId: string): void {
+    const reviewer = this.db
+      .prepare('SELECT id, name FROM reviewers WHERE id = ?')
+      .get(reviewerId) as { id: string; name: string } | undefined;
+    if (!reviewer) throw new HttpError(404, `Reviewer ${reviewerId} not found.`);
+
+    const messages = (
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM messages WHERE author_kind = 'reviewer' AND author_id = ?")
+        .get(reviewerId) as { n: number }
+    ).n;
+    const events = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM status_events WHERE principal_kind = 'reviewer' AND principal_id = ?",
+        )
+        .get(reviewerId) as { n: number }
+    ).n;
+
+    if (messages || events) {
+      throw new HttpError(
+        409,
+        `${reviewer.name} has taken part — ${messages} comment(s) and ${events} status change(s) — and cannot be removed without orphaning that record.`,
+        'reviewer_has_history',
+      );
+    }
+
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM reviewer_progress WHERE reviewer_id = ?').run(reviewerId);
+      this.db.prepare('DELETE FROM sessions WHERE reviewer_id = ?').run(reviewerId);
+      this.db.prepare('DELETE FROM magic_links WHERE reviewer_id = ?').run(reviewerId);
+      this.db.prepare('DELETE FROM reviewers WHERE id = ?').run(reviewerId);
+    })();
+  }
+
   createMagicLink(reviewerId: string, expiresAt?: string): string {
     const reviewer = this.db.prepare('SELECT id FROM reviewers WHERE id = ?').get(reviewerId);
     if (!reviewer) throw new HttpError(404, `Reviewer ${reviewerId} not found.`);

@@ -272,6 +272,16 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
     c.json({ reviewers: store.listReviewers() }),
   );
 
+  /*
+   * Removing a reviewer also removes every way they had in — their links and any live
+   * session. Refused outright for anyone who has commented or changed a status; see
+   * `deleteReviewer` for why that refusal is the feature rather than an obstacle.
+   */
+  app.delete('/api/reviewers/:id', requirePrincipal('admin'), (c) => {
+    store.deleteReviewer(c.req.param('id'));
+    return c.body(null, 204);
+  });
+
   app.post('/api/reviewers/:id/links', requirePrincipal('admin'), async (c) => {
     const input = await body(c, z.object({ expiresAt: z.string().optional() }).optional().default({}));
     const token = store.createMagicLink(c.req.param('id'), input.expiresAt);
