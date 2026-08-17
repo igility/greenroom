@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { StoryKind } from '@igility/greenroom-shared';
 import type { Config } from './config.js';
 import type { Store } from './store.js';
-import { HttpError } from './util.js';
+import { HttpError, withStaleBuildNotice } from './util.js';
 import { requirePrincipal, principalOf, SESSION_COOKIE, type AppEnv } from './auth.js';
 
 const STORY_STATES = ['in_review', 'changes_requested', 'addressed', 'approved'] as const;
@@ -80,7 +80,31 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
     }
     const ext = filePath.split('.').pop() ?? '';
     c.header('content-type', MIME[ext] ?? 'application/octet-stream');
-    return c.body(new Uint8Array(fs.readFileSync(filePath)));
+    const bytes = fs.readFileSync(filePath);
+
+    /*
+     * Tell a reviewer when they are looking at a build that has been superseded.
+     *
+     * A reviewer arrives through a magic link, which redirects to whatever build was
+     * latest at that moment — and from then on the build id is in the URL. Every click
+     * after that stays inside that build, a bookmark pins it forever, and refreshing
+     * cannot help, because the id is the address.
+     *
+     * 🔴 That fails in the worst direction. The reviewer sees a coherent, working
+     * Storybook and has no way to know it is stale, so they review superseded work
+     * believing it is current — and report problems that were fixed builds ago. It has
+     * already happened once, which is why this exists.
+     *
+     * The pinning itself is correct and stays: an approval binds to a specific build, and
+     * that is the whole point of the tool. What was missing was only the signal.
+     */
+    if (rel === 'index.html') {
+      const latest = store.latestBuild();
+      if (latest && latest.id !== c.req.param('id')) {
+        return c.body(new Uint8Array(withStaleBuildNotice(bytes, latest.id, c.req.query('path'))));
+      }
+    }
+    return c.body(new Uint8Array(bytes));
   });
 
   // ── stories + status ──────────────────────────────────────────────────────
