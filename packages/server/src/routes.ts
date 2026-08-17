@@ -8,6 +8,8 @@ import type { Config } from './config.js';
 import type { Store } from './store.js';
 import { HttpError, withStaleBuildNotice } from './util.js';
 import { requirePrincipal, principalOf, SESSION_COOKIE, type AppEnv } from './auth.js';
+import { createLinkRequestHandler } from './link-request.js';
+import { createMailer, type Mailer } from './mail.js';
 
 const STORY_STATES = ['in_review', 'changes_requested', 'addressed', 'approved'] as const;
 const THREAD_STATES = ['open', 'addressed', 'resolved'] as const;
@@ -47,7 +49,36 @@ async function body<T extends z.ZodType>(c: { req: { text: () => Promise<string>
 // disk filled by an oversized or zip-bomb upload. Overridable via env.
 const MAX_UPLOAD_BYTES = Number(process.env.GREENROOM_MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
 
-export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) {
+export function registerRoutes(
+  app: Hono<AppEnv>,
+  store: Store,
+  config: Config,
+  mailer: Mailer = createMailer(config),
+) {
+  const requestReviewLink = createLinkRequestHandler(store, config, mailer);
+
+  /*
+   * Ask for a review link. Unauthenticated by necessity — the caller has no session,
+   * which is the entire situation this exists for.
+   *
+   * The response never varies. Same status, same body, whether the address belongs to a
+   * reviewer, belongs to nobody, or was rate-limited. Anything else makes this a
+   * directory of who is reviewing an unreleased product. See `link-request.ts`.
+   */
+  app.post('/api/review-links/request', async (c) => {
+    const input = await body(c, z.object({ email: z.string().min(3).max(320) }));
+    const callerKey =
+      c.req.header('cf-connecting-ip') ??
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
+      'unknown';
+    // Awaited so a send failure is handled — but its outcome is deliberately discarded.
+    await requestReviewLink(input.email, callerKey);
+    return c.json({
+      ok: true,
+      message: 'If that address is on this review, a link is on its way.',
+    });
+  });
+
   // ── builds ────────────────────────────────────────────────────────────────
   app.post('/api/builds', requirePrincipal('admin', 'agent'), async (c) => {
     const label = c.req.query('label') ?? new Date().toISOString().slice(0, 16);

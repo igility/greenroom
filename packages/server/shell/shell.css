@@ -187,3 +187,36 @@ textarea, input[type='text'] {
   text-decoration: underline;
   white-space: nowrap;
 }
+
+/* The gate a reviewer without a session lands on. Centred and narrow: it is the whole
+   page, and the only thing on it is one decision. */
+.gate-form {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 20px auto 0;
+  max-width: 420px;
+}
+.gate-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 9px 11px;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.gate-form input:disabled { opacity: 0.6; }
+.gate-form button {
+  padding: 9px 14px;
+  font: inherit;
+  cursor: pointer;
+  color: #fff;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+}
+.gate-form button:disabled { opacity: 0.6; cursor: default; }
+.gate-note { margin-top: 12px; min-height: 1.2em; }

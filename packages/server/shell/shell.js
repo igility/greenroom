@@ -634,6 +634,65 @@ function wireEvents(current) {
   });
 }
 
+/**
+ * What a reviewer sees with no session.
+ *
+ * It used to end the conversation — "ask your contact for a fresh one" — which turned
+ * losing access into a support request and is most of why the flow read as a prototype.
+ * When the sidecar can send mail, they can ask for themselves.
+ *
+ * The form is only offered when `selfServiceLinks` says the capability is really there.
+ * A field that silently does nothing is worse than the honest sentence it replaces.
+ *
+ * The reply never varies — the server answers the same way for an address it knows, an
+ * address it does not, and one that has asked too often — so this must not add a
+ * distinction the server was careful not to make.
+ */
+async function renderGate() {
+  let selfService = false;
+  try {
+    selfService = (await api('GET', '/api/health')).selfServiceLinks === true;
+  } catch {
+    // Health failing means something larger is wrong; fall through to the plain gate.
+  }
+
+  if (!selfService) {
+    app.innerHTML = `<div class="gate"><h1>Greenroom</h1><p>This page needs a review link. Ask your contact for a fresh one.</p></div>`;
+    return;
+  }
+
+  app.innerHTML = `<div class="gate">
+      <h1>Greenroom</h1>
+      <p>This page needs a review link. Enter the address you were invited at and we will send a fresh one.</p>
+      <form class="gate-form" id="gate-form">
+        <input id="gate-email" type="email" required autocomplete="email" placeholder="you@company.com" aria-label="Your email address" />
+        <button type="submit">Send me a link</button>
+      </form>
+      <p class="gate-note" id="gate-note" role="status" aria-live="polite"></p>
+    </div>`;
+
+  const form = document.getElementById('gate-form');
+  const note = document.getElementById('gate-note');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const button = form.querySelector('button');
+    button.disabled = true;
+    note.textContent = 'Sending…';
+    try {
+      const out = await api('POST', '/api/review-links/request', {
+        email: document.getElementById('gate-email').value,
+      });
+      note.textContent = out.message;
+      // The form stays disabled afterwards. Re-submitting cannot tell them anything new
+      // — the answer is the same either way — and it only spends their rate allowance.
+      form.querySelector('input').disabled = true;
+    } catch {
+      note.textContent = 'Could not reach the review server. Try again in a moment.';
+      button.disabled = false;
+    }
+  });
+}
+
 // ── boot ─────────────────────────────────────────────────────────────────────
 
 async function boot() {
@@ -641,7 +700,7 @@ async function boot() {
     const me = await api('GET', '/api/me');
     state.me = me.principal;
   } catch {
-    app.innerHTML = `<div class="gate"><h1>Greenroom</h1><p>This page needs a review link. Ask your contact for a fresh one.</p></div>`;
+    await renderGate();
     return;
   }
   // Approval is an approver-only action; admins always qualify.
@@ -656,7 +715,9 @@ async function boot() {
     buildSkeleton();
     await loadAll();
     const first =
-      state.stories.find((s) => s.state === 'needs_reconfirm') ??
+      // `needs_reconfirm` was retired: a build arriving no longer unsettles a decision,
+      // and a render that has moved is flagged on the still-approved story instead.
+      state.stories.find((s) => s.changedSinceApproval) ??
       state.stories.find((s) => s.state !== 'approved') ??
       state.stories[0];
     if (first) {

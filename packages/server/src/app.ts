@@ -5,11 +5,12 @@ import type { Config } from './config.js';
 import type { Store } from './store.js';
 import { principalMiddleware, type AppEnv } from './auth.js';
 import { registerRoutes } from './routes.js';
+import { createMailer, type Mailer } from './mail.js';
 import { HttpError } from './util.js';
 
 export const APP_VERSION = '0.0.0';
 
-export function createApp(store: Store, config: Config) {
+export function createApp(store: Store, config: Config, mailer: Mailer = createMailer(config)) {
   const app = new Hono<AppEnv>();
 
   app.onError((err, c) => {
@@ -104,9 +105,19 @@ export function createApp(store: Store, config: Config) {
 
   app.use(principalMiddleware(store, config));
 
-  app.get('/api/health', (c) => c.json({ ok: true, name: 'greenroom', version: APP_VERSION }));
+  /* `selfServiceLinks` is read by the reviewer gate before anyone is authenticated. The
+   * gate must not offer "email me a link" when no SMTP is configured — a form that
+   * silently does nothing is worse than the honest "ask your contact" it replaces. */
+  app.get('/api/health', (c) =>
+    c.json({
+      ok: true,
+      name: 'greenroom',
+      version: APP_VERSION,
+      selfServiceLinks: mailer.enabled,
+    }),
+  );
 
-  registerRoutes(app, store, config);
+  registerRoutes(app, store, config, mailer);
 
   return app;
 }

@@ -18,6 +18,21 @@ export interface Config {
    * production.
    */
   edgeSecret: string;
+  /**
+   * SMTP connection string, e.g. `smtps://user:pass@smtp.resend.com:465`. Empty leaves
+   * self-service link requests switched off and the sidecar behaving exactly as before:
+   * an admin mints links and delivers them by hand.
+   */
+  smtpUrl: string;
+  /** From address for review-link mail. Required alongside `smtpUrl`; without it the
+   *  mailer stays off, because a message with no sender is a bounce, not a delivery. */
+  mailFrom: string;
+  /**
+   * How long a self-service link lasts. Short on purpose — the reviewer can always ask
+   * for another, which is the point of the feature, so there is no reason for one to sit
+   * in an inbox for months being forwardable.
+   */
+  selfServiceLinkTtlHours: number;
 }
 
 /** Works from both src/ (tests via vitest) and dist/ (built CLI) — the shell
@@ -39,6 +54,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const edgeSecret = env.GREENROOM_EDGE_SECRET ?? '';
+  const smtpUrl = env.GREENROOM_SMTP_URL ?? '';
+  const mailFrom = env.GREENROOM_MAIL_FROM ?? '';
+  const selfServiceLinkTtlHours = Number(env.GREENROOM_LINK_TTL_HOURS ?? 72);
 
-  return { dataDir, port, publicUrl, adminKey, adminKeyGenerated, shellDir, edgeSecret };
+  return {
+    dataDir,
+    port,
+    publicUrl,
+    adminKey,
+    adminKeyGenerated,
+    shellDir,
+    edgeSecret,
+    smtpUrl,
+    mailFrom,
+    selfServiceLinkTtlHours,
+  };
 }

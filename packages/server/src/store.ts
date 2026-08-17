@@ -1031,6 +1031,23 @@ export class Store {
   }
 
   /**
+   * Find a reviewer by the address they were invited at, case-insensitively.
+   *
+   * Only ever used to answer "may this address be sent a link it already had". It cannot
+   * create anybody: self-service re-issues access to someone an admin already invited,
+   * and an endpoint that could mint a reviewer would be an open door into a client's
+   * unreleased design system.
+   */
+  findReviewerByEmail(email: string): Reviewer | null {
+    const row = this.db
+      .prepare('SELECT * FROM reviewers WHERE lower(email) = lower(?)')
+      .get(email.trim()) as ReviewerRow | undefined;
+    return row
+      ? { id: row.id, name: row.name, email: row.email, role: row.role as ReviewerRole }
+      : null;
+  }
+
+  /**
    * Remove a reviewer who never used their link, and everything that let them in.
    *
    * Exists because reviewers accumulate: a smoke test during setup, a throwaway used to
