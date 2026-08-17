@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { addons, types, useChannel, useParameter, useStorybookApi } from 'storybook/manager-api';
 import { Button, IconButton, TooltipNote, WithTooltip } from 'storybook/internal/components';
 import { useTheme, type Theme } from 'storybook/theming';
@@ -139,6 +139,30 @@ const inputStyle = (t: Theme): React.CSSProperties => ({
   boxSizing: 'border-box',
 });
 
+/**
+ * Grow a field to fit what has been typed into it.
+ *
+ * A reply is usually one sentence and occasionally three. A single-line input turns the
+ * long reply into a keyhole you scroll sideways through; a fixed multi-line box wastes the
+ * space on every short one and makes a two-word answer look like a form to fill in. Starting
+ * at one line and growing serves both.
+ *
+ * 🔴 The height must be reset to `auto` before `scrollHeight` is read. `scrollHeight`
+ * includes whatever height is already set on the element, so measuring without the reset
+ * only ever ratchets upward — the field would grow while typing and never shrink on delete.
+ *
+ * It stops growing at a ceiling and hands back the scrollbar, because a panel this narrow
+ * would otherwise let one pasted paragraph push the thread it belongs to off screen.
+ */
+const REPLY_MAX_HEIGHT = 200;
+
+function autoGrow(el: HTMLTextAreaElement | null): void {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, REPLY_MAX_HEIGHT)}px`;
+  el.style.overflowY = el.scrollHeight > REPLY_MAX_HEIGHT ? 'auto' : 'hidden';
+}
+
 function loadConn(): Conn | null {
   try {
     const raw = localStorage.getItem(CONN_KEY);
@@ -266,10 +290,17 @@ const Thread: React.FC<{
   goToStory,
 }) => {
   const [reply, setReply] = useState('');
+  const replyRef = useRef<HTMLTextAreaElement>(null);
   const send = async () => {
     if (!reply.trim()) return;
     await client.reply(item.thread.id, reply.trim());
     setReply('');
+    // Collapse back to one line. `auto` is enough and self-correcting: the field is about
+    // to be emptied, and an auto-height textarea with one row settles at one row.
+    if (replyRef.current) {
+      replyRef.current.style.height = 'auto';
+      replyRef.current.style.overflowY = 'hidden';
+    }
     onChanged();
   };
   const theme = useTheme();
@@ -381,13 +412,30 @@ const Thread: React.FC<{
           Resolve gets its own row: it closes the thread, and putting it beside the reply
           box made it read as that field's action — one mis-click from discarding
           someone else's open objection instead of answering it. */}
-      <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
-        <input
-          style={{ ...inputStyle(theme), flex: 1 }}
+      {/* `flex-end` rather than `center`: as the field grows the button stays level with the
+          line being typed, instead of drifting to the middle of a tall box. */}
+      <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'flex-end' }}>
+        <textarea
+          ref={replyRef}
+          rows={1}
+          style={{ ...inputStyle(theme), flex: 1, resize: 'none', overflowY: 'hidden' }}
           placeholder="Reply…"
           value={reply}
-          onChange={(e) => setReply(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void send()}
+          onChange={(e) => {
+            setReply(e.target.value);
+            // Measured from the event's own element, synchronously, so the field grows in
+            // the same frame as the character appears rather than a frame later.
+            autoGrow(e.currentTarget);
+          }}
+          // Enter still sends, because that is what the single-line field did and replies
+          // are short. Shift+Enter is the deliberate newline, which only became possible
+          // once this stopped being an input.
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              void send();
+            }
+          }}
         />
         <Button size="small" variant="solid" disabled={!reply.trim()} onClick={() => void send()}>
           Reply
