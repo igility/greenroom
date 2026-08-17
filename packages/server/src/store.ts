@@ -1057,6 +1057,50 @@ export class Store {
     })();
   }
 
+  /**
+   * Delete a thread outright — its messages, and the screenshot it pinned.
+   *
+   * Normally a thread is resolved, never removed: the record of what was raised and how it
+   * was answered is most of what this tool is for. This exists for the narrower case of
+   * threads that were never review at all — a comment left while testing the mechanism,
+   * on a surface a client is about to open. Resolving those leaves them visible under a
+   * filter, which is not the same as them not being there.
+   *
+   * Admin only, and destructive on purpose: there is no soft-delete to fall back to, so
+   * anything removed here is gone. The attachment file is unlinked too, since an orphaned
+   * screenshot of a client's unreleased design is worth less than nothing.
+   */
+  deleteThread(threadId: string): void {
+    const row = this.db
+      .prepare('SELECT id, screenshot_attachment_id FROM threads WHERE id = ?')
+      .get(threadId) as { id: string; screenshot_attachment_id: string | null } | undefined;
+    if (!row) throw new HttpError(404, `Thread ${threadId} not found.`);
+
+    const attachment = row.screenshot_attachment_id
+      ? (this.db
+          .prepare('SELECT file_path FROM attachments WHERE id = ?')
+          .get(row.screenshot_attachment_id) as { file_path: string } | undefined)
+      : undefined;
+
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM messages WHERE thread_id = ?').run(threadId);
+      this.db.prepare('DELETE FROM threads WHERE id = ?').run(threadId);
+      if (row.screenshot_attachment_id) {
+        this.db.prepare('DELETE FROM attachments WHERE id = ?').run(row.screenshot_attachment_id);
+      }
+    })();
+
+    // Outside the transaction: a failed unlink must not roll back the delete. A file left
+    // on disk is untidy; a thread the client can still see is the thing being fixed.
+    if (attachment) {
+      try {
+        fs.unlinkSync(attachment.file_path);
+      } catch {
+        /* already gone, or never written */
+      }
+    }
+  }
+
   createMagicLink(reviewerId: string, expiresAt?: string): string {
     const reviewer = this.db.prepare('SELECT id FROM reviewers WHERE id = ?').get(reviewerId);
     if (!reviewer) throw new HttpError(404, `Reviewer ${reviewerId} not found.`);

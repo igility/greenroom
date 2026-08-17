@@ -209,6 +209,13 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
     return c.json({ message }, 201);
   });
 
+  /* Removing a thread is for test noise on a client-facing surface, not for review. It is
+     destructive and admin-only; see `deleteThread`. */
+  app.delete('/api/threads/:id', requirePrincipal('admin'), (c) => {
+    store.deleteThread(c.req.param('id'));
+    return c.body(null, 204);
+  });
+
   app.post('/api/threads/:id/state', requirePrincipal(), async (c) => {
     const input = await body(
       c,
