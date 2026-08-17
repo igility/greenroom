@@ -36,6 +36,32 @@ export interface BuildUploadResult {
   newStories: number;
 }
 
+/** How much of a link token a listing shows. Enough to identify a row for revocation,
+ *  far too little to reach the review with. */
+const TOKEN_PREFIX_LEN = 10;
+
+export interface MagicLinkSummary {
+  /** Never the whole token — see `listMagicLinks`. */
+  tokenPrefix: string;
+  reviewer: { id: string; name: string; email: string };
+  createdAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  /** Unexpired sessions this link minted. What revoking it would end. */
+  liveSessions: number;
+  /** Neither revoked nor past its expiry. */
+  active: boolean;
+}
+
+export interface TokenSummary {
+  id: string;
+  kind: string;
+  name: string;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
 export interface FeedbackItem {
   thread: Thread;
   story: Pick<Story, 'storyId' | 'title' | 'componentTitle' | 'importPath' | 'state'>;
@@ -1111,6 +1137,166 @@ export class Store {
     return token;
   }
 
+  /**
+   * Every link, newest first, with the reviewer it belongs to and its live sessions.
+   *
+   * The token is deliberately NOT returned in full. It is the credential, and a listing
+   * that prints it dumps working credentials into terminal scrollback, shell history and
+   * anyone's screenshot. A prefix is enough to identify a row for revocation and useless
+   * for reaching the review — and an admin who needs a working link can mint one, which
+   * is both easier and leaves a record.
+   */
+  listMagicLinks(opts: { reviewerId?: string; includeInactive?: boolean } = {}): MagicLinkSummary[] {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (opts.reviewerId) {
+      where.push('m.reviewer_id = ?');
+      params.push(opts.reviewerId);
+    }
+    if (!opts.includeInactive) where.push('m.revoked_at IS NULL');
+    const rows = this.db
+      .prepare(
+        `SELECT m.*, r.name AS reviewer_name, r.email AS reviewer_email,
+                (SELECT COUNT(*) FROM sessions s
+                  WHERE s.magic_link_token = m.token AND s.expires_at > ?) AS live_sessions
+           FROM magic_links m JOIN reviewers r ON r.id = m.reviewer_id
+          ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+          ORDER BY m.created_at DESC`,
+      )
+      .all(nowIso(), ...params) as (MagicLinkRow & {
+      reviewer_name: string;
+      reviewer_email: string;
+      live_sessions: number;
+    })[];
+    const now = nowIso();
+    return rows.map((r) => ({
+      tokenPrefix: r.token.slice(0, TOKEN_PREFIX_LEN),
+      reviewer: { id: r.reviewer_id, name: r.reviewer_name, email: r.reviewer_email },
+      createdAt: r.created_at,
+      expiresAt: r.expires_at,
+      lastUsedAt: r.last_used_at,
+      revokedAt: r.revoked_at,
+      liveSessions: r.live_sessions,
+      // Stated rather than left for the caller to derive, because "why is this link not
+      // working" is the question this listing exists to answer.
+      active: !r.revoked_at && !(r.expires_at && r.expires_at < now),
+    }));
+  }
+
+  /**
+   * Withdraw a link, and end the access it granted.
+   *
+   * Setting `revoked_at` alone stops future redemptions and nothing else. Whoever the
+   * link reached keeps a session for up to thirty days, which is the whole window the
+   * revocation was meant to close. So the sessions this link minted are ended with it.
+   *
+   * Sessions created before v8 carry no link attribution and cannot be matched. They are
+   * counted and reported rather than swept up silently: ending every session the reviewer
+   * has would log out someone legitimately holding a different link, and that is a
+   * decision for the person revoking, not a default. `endAllSessions` is how they take it.
+   */
+  revokeMagicLink(
+    prefixOrToken: string,
+    opts: { endAllSessions?: boolean } = {},
+  ): { reviewer: Reviewer; sessionsEnded: number; unattributedSessions: number } {
+    const row = this.resolveMagicLink(prefixOrToken);
+    const reviewerRow = this.db
+      .prepare('SELECT * FROM reviewers WHERE id = ?')
+      .get(row.reviewer_id) as ReviewerRow;
+    const now = nowIso();
+    let sessionsEnded = 0;
+    let unattributedSessions = 0;
+    this.db.transaction(() => {
+      // Idempotent: revoking an already-revoked link still ends any session that
+      // somehow outlived it, and does not overwrite when the withdrawal happened.
+      if (!row.revoked_at) {
+        this.db.prepare('UPDATE magic_links SET revoked_at = ? WHERE token = ?').run(now, row.token);
+      }
+      sessionsEnded = this.db
+        .prepare('DELETE FROM sessions WHERE magic_link_token = ?')
+        .run(row.token).changes;
+      if (opts.endAllSessions) {
+        sessionsEnded += this.db
+          .prepare('DELETE FROM sessions WHERE reviewer_id = ? AND magic_link_token IS NULL')
+          .run(row.reviewer_id).changes;
+      } else {
+        unattributedSessions = (
+          this.db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM sessions
+                WHERE reviewer_id = ? AND magic_link_token IS NULL AND expires_at > ?`,
+            )
+            .get(row.reviewer_id, now) as { n: number }
+        ).n;
+      }
+    })();
+    return {
+      reviewer: {
+        id: reviewerRow.id,
+        name: reviewerRow.name,
+        email: reviewerRow.email,
+        role: reviewerRow.role as ReviewerRole,
+      },
+      sessionsEnded,
+      unattributedSessions,
+    };
+  }
+
+  /** Resolve a prefix to exactly one link, or refuse. Ambiguity must never be guessed
+   *  at — revoking the wrong reviewer's access is worse than making someone retype. */
+  private resolveMagicLink(prefixOrToken: string): MagicLinkRow {
+    const needle = prefixOrToken.trim();
+    if (needle.length < 6) {
+      throw new HttpError(400, 'Give at least 6 characters of the link to identify it.');
+    }
+    const rows = this.db
+      .prepare('SELECT * FROM magic_links WHERE token LIKE ? ESCAPE ?')
+      .all(`${needle.replace(/[%_\\]/g, '\\$&')}%`, '\\') as MagicLinkRow[];
+    if (!rows.length) throw new HttpError(404, `No review link starts with "${needle}".`);
+    if (rows.length > 1) {
+      throw new HttpError(
+        409,
+        `"${needle}" matches ${rows.length} links — use more characters.`,
+        'AMBIGUOUS',
+      );
+    }
+    return rows[0]!;
+  }
+
+  /** Agent and admin tokens. The token itself is stored hashed and cannot be shown
+   *  again; the id is the handle for revoking one. */
+  listTokens(opts: { includeRevoked?: boolean } = {}): TokenSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, kind, name, created_at, revoked_at FROM tokens
+          ${opts.includeRevoked ? '' : 'WHERE revoked_at IS NULL'}
+          ORDER BY created_at DESC`,
+      )
+      .all() as Omit<TokenRow, 'token_hash'>[];
+    return rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      name: r.name,
+      createdAt: r.created_at,
+      revokedAt: r.revoked_at,
+    }));
+  }
+
+  revokeToken(id: string): TokenSummary {
+    const row = this.db.prepare('SELECT * FROM tokens WHERE id = ?').get(id) as TokenRow | undefined;
+    if (!row) throw new HttpError(404, `No token with id ${id}.`);
+    if (!row.revoked_at) {
+      this.db.prepare('UPDATE tokens SET revoked_at = ? WHERE id = ?').run(nowIso(), id);
+    }
+    return {
+      id: row.id,
+      kind: row.kind,
+      name: row.name,
+      createdAt: row.created_at,
+      revokedAt: row.revoked_at ?? nowIso(),
+    };
+  }
+
   /** Redeem a magic link into a session id (the cookie value). Links are reusable
    * until revoked/expired — a client may click the same email link many times. */
   redeemMagicLink(token: string): { sessionId: string; reviewer: Reviewer } {
@@ -1129,12 +1315,15 @@ export class Store {
     this.db.transaction(() => {
       this.db.prepare('UPDATE magic_links SET last_used_at = ? WHERE token = ?').run(nowIso(), token);
       this.db
-        .prepare('INSERT INTO sessions (id, reviewer_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+        .prepare('INSERT INTO sessions (id, reviewer_id, created_at, expires_at, magic_link_token) VALUES (?, ?, ?, ?, ?)')
         .run(
           sessionId,
           row.reviewer_id,
           at.toISOString(),
           new Date(at.getTime() + SESSION_TTL_MS).toISOString(),
+          // Attribution is what makes the link revocable: ending the access a leaked
+          // link granted means knowing which sessions it minted.
+          token,
         );
     })();
     return {

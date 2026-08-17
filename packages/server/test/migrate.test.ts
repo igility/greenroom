@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openDb, SCHEMA_VERSION } from '../src/db.js';
+import { MIGRATIONS, openDb, SCHEMA_VERSION } from '../src/db.js';
 
 /**
  * The v2 migration rebuilds `fingerprints` to add `region_key` to its primary key,
@@ -18,46 +18,12 @@ function seedV1(dataDir: string) {
   fs.mkdirSync(dataDir, { recursive: true });
   const db = new Database(path.join(dataDir, 'greenroom.db'));
   db.pragma('journal_mode = WAL');
-  db.exec(`
-    CREATE TABLE builds (
-      id TEXT PRIMARY KEY, manifest_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
-      git_sha TEXT, story_count INTEGER NOT NULL, storage_path TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE TABLE stories (
-      story_id TEXT PRIMARY KEY, title TEXT NOT NULL, import_path TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'in_review', anchor_build_id TEXT REFERENCES builds(id),
-      last_seen_build_id TEXT NOT NULL REFERENCES builds(id), created_at TEXT NOT NULL
-    );
-    CREATE TABLE reviewers (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'approver', created_at TEXT NOT NULL
-    );
-    CREATE TABLE threads (
-      id TEXT PRIMARY KEY, story_id TEXT NOT NULL REFERENCES stories(story_id),
-      build_id TEXT NOT NULL REFERENCES builds(id), state TEXT NOT NULL DEFAULT 'open',
-      selector TEXT, x REAL, y REAL, viewport_w INTEGER, viewport_h INTEGER,
-      args_json TEXT, screenshot_attachment_id TEXT, created_by_kind TEXT NOT NULL,
-      created_by_id TEXT NOT NULL, created_by_name TEXT NOT NULL, created_at TEXT NOT NULL
-    );
-    CREATE TABLE messages (
-      id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id),
-      author_kind TEXT NOT NULL, author_id TEXT NOT NULL, author_name TEXT NOT NULL,
-      kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
-    );
-    CREATE TABLE fingerprints (
-      story_id TEXT NOT NULL, build_id TEXT NOT NULL, hash TEXT NOT NULL,
-      created_at TEXT NOT NULL, PRIMARY KEY (story_id, build_id)
-    );
-    -- Real v1 has this; the fixture omitted it until a migration needed to write to it,
-    -- at which point the seed stopped representing any database that ever existed.
-    CREATE TABLE status_events (
-      id TEXT PRIMARY KEY, story_id TEXT NOT NULL, from_state TEXT, to_state TEXT NOT NULL,
-      principal_kind TEXT NOT NULL, principal_id TEXT NOT NULL, principal_name TEXT NOT NULL,
-      approval_mode TEXT, delegation_id TEXT, build_id TEXT, note TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
+  // The real v1 schema, not a copy of it. A hand-written fixture drifted twice —
+  // missing `status_events` when v7 wrote to it, missing `sessions` when v8 altered it —
+  // because a fixture is only corrected when a migration happens to touch a table it
+  // forgot. Executing the actual first migration removes that failure mode entirely.
+  db.exec(MIGRATIONS[0] as string);
+  db.pragma('user_version = 1');
   db.prepare(
     `INSERT INTO builds (id, manifest_hash, label, git_sha, story_count, storage_path, created_at)
      VALUES ('b1', 'h1', 'first', NULL, 1, '/tmp/b1', '2026-01-01T00:00:00.000Z')`,
@@ -78,7 +44,6 @@ function seedV1(dataDir: string) {
     `INSERT INTO messages (id, thread_id, author_kind, author_id, author_name, kind, body, created_at)
      VALUES ('m1', 't1', 'reviewer', 'r1', 'Jordan', 'comment', 'Too cramped.', '2026-01-01T00:00:00.000Z')`,
   ).run();
-  db.pragma('user_version = 1');
   db.close();
 }
 

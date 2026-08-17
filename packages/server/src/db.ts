@@ -29,7 +29,12 @@ export interface MigrationContext {
 
 export type Migration = string | ((db: DB, ctx: MigrationContext) => void);
 
-const MIGRATIONS: Migration[] = [
+/** Exported so tests can seed a database at an older version from the real schema
+ *  rather than a hand-written copy of it. A hand-written v1 drifted twice — it was
+ *  missing `status_events` when v7 needed to write to it and `sessions` when v8 did,
+ *  because a fixture only gets corrected when a migration happens to touch a table it
+ *  forgot. Seeding from MIGRATIONS[0] makes that impossible. */
+export const MIGRATIONS: Migration[] = [
   // v1 — initial schema
   `
   CREATE TABLE builds (
@@ -342,6 +347,33 @@ const MIGRATIONS: Migration[] = [
       );
     }
   },
+
+  /*
+   * v8 — record which link minted each session, so a link can actually be revoked.
+   *
+   * Magic links could be created and never withdrawn. `magic_links.revoked_at` existed
+   * and `redeemMagicLink` checked it, but nothing ever wrote it, so the check was
+   * unreachable; the only code that removed a link was `deleteReviewer`, which refuses
+   * outright once a reviewer has any history. For any reviewer who had actually
+   * reviewed something, their link could not be invalidated by any means the product
+   * offered — and links are reusable and, by default, never expire.
+   *
+   * Withdrawing the link is only half of it. A redemption mints a 30-day session, and a
+   * revocation that leaves that session alive is not a revocation — whoever the link
+   * leaked to keeps their access for a month. Ending those sessions requires knowing
+   * which link minted them, and `sessions` did not record it. Without this column the
+   * only options are to end every session the reviewer has, logging out someone who
+   * legitimately holds a different link, or to leave the leaked access running.
+   *
+   * Nullable, and existing rows stay NULL: a session created before this migration
+   * cannot be attributed to any link, and guessing would be worse than admitting it.
+   * Revocation reports those separately and offers to end them explicitly, so the
+   * blunt instrument stays available for the case it is actually right for.
+   */
+  `
+  ALTER TABLE sessions ADD COLUMN magic_link_token TEXT REFERENCES magic_links(token);
+  CREATE INDEX idx_sessions_magic_link ON sessions(magic_link_token);
+  `,
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the

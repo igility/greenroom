@@ -295,6 +295,41 @@ export function registerRoutes(app: Hono<AppEnv>, store: Store, config: Config) 
     return c.json({ token, url: `${config.publicUrl}/review/${token}` }, 201);
   });
 
+  // Listing never returns whole tokens — see `listMagicLinks`. `reviewerId` narrows to
+  // one person; `includeInactive` shows revoked and expired links, which is what you
+  // want when answering "why did their link stop working".
+  app.get('/api/links', requirePrincipal('admin'), (c) =>
+    c.json({
+      links: store.listMagicLinks({
+        reviewerId: c.req.query('reviewerId') || undefined,
+        includeInactive: c.req.query('includeInactive') === 'true',
+      }),
+    }),
+  );
+
+  /*
+   * Withdraw a link and end the access it granted.
+   *
+   * A POST, not a DELETE: the row survives. The listing has to keep showing revoked
+   * links, because "this link was withdrawn on the 14th" is the answer to a question
+   * somebody will ask, and a deleted row answers nothing.
+   */
+  app.post('/api/links/:prefix/revoke', requirePrincipal('admin'), async (c) => {
+    const input = await body(
+      c,
+      z.object({ endAllSessions: z.boolean().optional() }).optional().default({}),
+    );
+    return c.json(store.revokeMagicLink(c.req.param('prefix'), input));
+  });
+
+  app.get('/api/tokens', requirePrincipal('admin'), (c) =>
+    c.json({ tokens: store.listTokens({ includeRevoked: c.req.query('includeRevoked') === 'true' }) }),
+  );
+
+  app.post('/api/tokens/:id/revoke', requirePrincipal('admin'), (c) =>
+    c.json({ token: store.revokeToken(c.req.param('id')) }),
+  );
+
   app.get('/api/me', requirePrincipal(), (c) => c.json({ principal: principalOf(c) }));
 
   // ── delegations + tokens (admin) ──────────────────────────────────────────

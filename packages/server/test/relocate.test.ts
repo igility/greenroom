@@ -98,10 +98,19 @@ describe('a data directory that moves', () => {
     first
       .prepare('UPDATE builds SET storage_path = ? WHERE id = ?')
       .run(path.join(original, 'builds', build.id), build.id);
-    // Genuinely restore the v3 shape. Moving user_version alone replays v5 as well,
-    // which then fails on a column that is already there.
+    // Genuinely restore the v3 shape. Moving user_version alone replays every later
+    // migration, and the additive ones then fail on a column that is already there.
+    //
+    // This undo list grows by a line every time a migration adds a column, which is a
+    // real cost and a signal: the test wants "a database as v3 left it" and gets there
+    // by building the newest schema and walking it backwards. Seeding forwards with
+    // `migrate(db, MIGRATIONS.slice(0, 3))` would be exact and permanent, but the build
+    // it relocates is written by `ingestBuildZip`, which needs the current schema — so
+    // the backwards walk stays until that coupling is worth unpicking.
     first.exec('ALTER TABLE stories DROP COLUMN component_title');
     first.exec('DROP INDEX IF EXISTS idx_stories_import_path');
+    first.exec('DROP INDEX IF EXISTS idx_sessions_magic_link');
+    first.exec('ALTER TABLE sessions DROP COLUMN magic_link_token');
     first.pragma('user_version = 3');
     first.close();
 
@@ -134,6 +143,8 @@ describe('a data directory that moves', () => {
     db.prepare('UPDATE builds SET storage_path = ? WHERE id = ?').run(elsewhere, build.id);
     db.exec('ALTER TABLE stories DROP COLUMN component_title');
     db.exec('DROP INDEX IF EXISTS idx_stories_import_path');
+    db.exec('DROP INDEX IF EXISTS idx_sessions_magic_link');
+    db.exec('ALTER TABLE sessions DROP COLUMN magic_link_token');
     db.pragma('user_version = 3');
     db.close();
 
