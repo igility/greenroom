@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { zipSync } from 'fflate';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openDb } from '../src/db.js';
+import Database from 'better-sqlite3';
+import { MIGRATIONS, migrate, openDb } from '../src/db.js';
 import { Store } from '../src/store.js';
 import type { Principal } from '@igility/greenroom-shared';
 
@@ -53,6 +54,32 @@ function relocate(from: string, to: string) {
   fs.rmSync(from, { recursive: true, force: true });
 }
 
+/**
+ * A data directory exactly as v3 left it: the build files on disk, and a `builds` row
+ * carrying the ABSOLUTE `storage_path` that v3 and earlier wrote.
+ *
+ * Built forwards, by running the first three migrations, rather than by opening the
+ * current schema and undoing everything since. The backwards walk needed a new line for
+ * every migration that added a column — it was patched for v5, then v8, then v9 — and a
+ * fixture that only gets corrected when it happens to break is a fixture that quietly
+ * stops representing the thing it claims to. `ingestBuildZip` cannot help here because
+ * it needs the current schema, so the row and the files are written directly.
+ */
+function seedV3(dataDir: string, buildId: string) {
+  const buildDir = path.join(dataDir, 'builds', buildId);
+  fs.mkdirSync(buildDir, { recursive: true });
+  fs.writeFileSync(path.join(buildDir, 'iframe.html'), '<html><body>the build</body></html>');
+  const db = new Database(path.join(dataDir, 'greenroom.db'));
+  db.pragma('journal_mode = WAL');
+  migrate(db, MIGRATIONS.slice(0, 3), { dataDir });
+  db.prepare(
+    `INSERT INTO builds (id, manifest_hash, label, git_sha, story_count, storage_path, created_at)
+     VALUES (?, ?, 'r1', NULL, 0, ?, '2026-01-01T00:00:00.000Z')`,
+  ).run(buildId, `h-${buildId}`, buildDir);
+  db.close();
+  return buildDir;
+}
+
 describe('a data directory that moves', () => {
   it('records build storage relative to the data directory', () => {
     const dataDir = path.join(root, 'first');
@@ -92,39 +119,20 @@ describe('a data directory that moves', () => {
 
   it('rewrites an absolute path written before v4, on the next open', () => {
     const original = path.join(root, 'original');
-    const first = openDb(original);
-    const { build } = new Store(first, original).ingestBuildZip(storybookZip(), { label: 'r1' }, ADMIN);
-    // Put the row back the way v3 and earlier wrote it, and drop the version so v4 reruns.
-    first
-      .prepare('UPDATE builds SET storage_path = ? WHERE id = ?')
-      .run(path.join(original, 'builds', build.id), build.id);
-    // Genuinely restore the v3 shape. Moving user_version alone replays every later
-    // migration, and the additive ones then fail on a column that is already there.
-    //
-    // This undo list grows by a line every time a migration adds a column, which is a
-    // real cost and a signal: the test wants "a database as v3 left it" and gets there
-    // by building the newest schema and walking it backwards. Seeding forwards with
-    // `migrate(db, MIGRATIONS.slice(0, 3))` would be exact and permanent, but the build
-    // it relocates is written by `ingestBuildZip`, which needs the current schema — so
-    // the backwards walk stays until that coupling is worth unpicking.
-    first.exec('ALTER TABLE stories DROP COLUMN component_title');
-    first.exec('DROP INDEX IF EXISTS idx_stories_import_path');
-    first.exec('DROP INDEX IF EXISTS idx_sessions_magic_link');
-    first.exec('ALTER TABLE sessions DROP COLUMN magic_link_token');
-    first.pragma('user_version = 3');
-    first.close();
+    const buildId = 'b-pre-v4';
+    seedV3(original, buildId);
 
     const restored = path.join(root, 'restored');
     relocate(original, restored);
 
     const db = openDb(restored);
     expect(
-      (db.prepare('SELECT storage_path FROM builds WHERE id = ?').get(build.id) as {
+      (db.prepare('SELECT storage_path FROM builds WHERE id = ?').get(buildId) as {
         storage_path: string;
       }).storage_path,
-    ).toBe(path.join('builds', build.id));
+    ).toBe(path.join('builds', buildId));
     expect(
-      fs.readFileSync(new Store(db, restored).buildFilePath(build.id, 'iframe.html'), 'utf8'),
+      fs.readFileSync(new Store(db, restored).buildFilePath(buildId, 'iframe.html'), 'utf8'),
     ).toContain('the build');
     db.close();
   });
@@ -134,31 +142,23 @@ describe('a data directory that moves', () => {
     // keeps working because buildFilePath resolves against the data directory, and
     // path.resolve ignores that base when the stored value is already absolute.
     const dataDir = path.join(root, 'odd');
-    const db = openDb(dataDir);
-    const store = new Store(db, dataDir);
-    const { build } = store.ingestBuildZip(storybookZip(), { label: 'r1' }, ADMIN);
+    const buildId = 'b-odd';
+    seedV3(dataDir, buildId);
 
     const elsewhere = path.join(root, 'somewhere-else');
-    fs.cpSync(path.join(dataDir, 'builds', build.id), elsewhere, { recursive: true });
-    db.prepare('UPDATE builds SET storage_path = ? WHERE id = ?').run(elsewhere, build.id);
-    db.exec('ALTER TABLE stories DROP COLUMN component_title');
-    db.exec('DROP INDEX IF EXISTS idx_stories_import_path');
-    db.exec('DROP INDEX IF EXISTS idx_sessions_magic_link');
-    db.exec('ALTER TABLE sessions DROP COLUMN magic_link_token');
-    db.pragma('user_version = 3');
-    db.close();
+    fs.cpSync(path.join(dataDir, 'builds', buildId), elsewhere, { recursive: true });
+    const seeded = new Database(path.join(dataDir, 'greenroom.db'));
+    seeded.prepare('UPDATE builds SET storage_path = ? WHERE id = ?').run(elsewhere, buildId);
+    seeded.close();
 
     const reopened = openDb(dataDir);
     expect(
-      (reopened.prepare('SELECT storage_path FROM builds WHERE id = ?').get(build.id) as {
+      (reopened.prepare('SELECT storage_path FROM builds WHERE id = ?').get(buildId) as {
         storage_path: string;
       }).storage_path,
     ).toBe(elsewhere);
     expect(
-      fs.readFileSync(
-        new Store(reopened, dataDir).buildFilePath(build.id, 'iframe.html'),
-        'utf8',
-      ),
+      fs.readFileSync(new Store(reopened, dataDir).buildFilePath(buildId, 'iframe.html'), 'utf8'),
     ).toContain('the build');
     reopened.close();
   });

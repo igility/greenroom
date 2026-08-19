@@ -572,7 +572,7 @@ function threadHtml(item) {
   return `
     <div class="thread" data-thread="${t.id}">
       <div class="meta">
-        <span>${t.pin ? 'Pinned comment' : 'General'} by <strong>${esc(t.createdBy.name)}</strong>${t.createdBy.kind === 'agent' ? ' (agent)' : ''} · ${esc(shortTime(t.createdAt))}${seenOn ? ` · on ${esc(seenOn)}` : ''}</span>
+        <span>${t.pin ? 'Pinned comment' : 'General'} by <strong>${esc(t.createdBy.name)}</strong>${t.createdBy.kind === 'agent' ? ' (agent)' : ''} · ${esc(shortTime(t.createdAt))}${seenOn ? ` · on ${esc(seenOn)}` : ''}${t.pin?.viewportLabel ? ` · <span title="Left at ${t.pin.viewportWidth}\u00d7${t.pin.viewportHeight}">${esc(t.pin.viewportLabel)}</span>` : ''}</span>
         <span>${esc(t.state)}</span>
       </div>
       ${t.screenshotAttachmentId ? `<img src="/api/attachments/${encodeURIComponent(t.screenshotAttachmentId)}" alt="Comment screenshot" loading="lazy" />` : ''}

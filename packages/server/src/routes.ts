@@ -20,6 +20,10 @@ const pinSchema = z.object({
   y: z.number(),
   viewportWidth: z.number(),
   viewportHeight: z.number(),
+  /** Storybook's named viewport, when the reviewer had one selected. Optional because
+   *  the reviewer shell has no viewport control and a plain Storybook may have no
+   *  preset chosen — the width is recorded either way. */
+  viewportLabel: z.string().max(64).nullish(),
 });
 
 const MIME: Record<string, string> = {
@@ -214,7 +218,11 @@ export function registerRoutes(
         screenshotAttachmentId: z.string().optional(),
       }),
     );
-    return c.json({ feedback: store.createThread(input, principalOf(c)) }, 201);
+    // `viewportLabel` is optional over the wire — an older panel, the shell, or a
+    // reviewer with no preset selected all omit it — but a Pin either carries a label or
+    // carries null. Normalise once here rather than letting `undefined` travel inward.
+    const pin = input.pin ? { ...input.pin, viewportLabel: input.pin.viewportLabel ?? null } : undefined;
+    return c.json({ feedback: store.createThread({ ...input, pin }, principalOf(c)) }, 201);
   });
 
   app.get('/api/feedback', requirePrincipal(), (c) => {

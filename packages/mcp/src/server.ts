@@ -31,6 +31,22 @@ const feedbackView = (item: FeedbackItem) => ({
    */
   seenOnStoryId: item.thread.seenOnStoryId,
   pin: item.thread.pin,
+  /**
+   * The viewport the comment was made in, hoisted out of the pin because it changes
+   * what "reproduce this" means. A defect reported at 390px may not appear at 1440px
+   * at all, and an agent that opens the component at desktop width and finds nothing
+   * wrong will report the comment as unreproducible rather than fix it.
+   *
+   * `label` is what the reviewer selected in Storybook and is null when they selected
+   * nothing; `width` is always present. Reproduce at the width regardless of the label.
+   */
+  viewport: item.thread.pin
+    ? {
+        label: item.thread.pin.viewportLabel,
+        width: item.thread.pin.viewportWidth,
+        height: item.thread.pin.viewportHeight,
+      }
+    : null,
   args: item.thread.args,
   hasScreenshot: item.thread.screenshotAttachmentId !== null,
   createdBy: item.thread.createdBy,
@@ -53,8 +69,8 @@ export function buildServer(client: SidecarClient): McpServer {
       description:
         'List human review feedback threads on Storybook stories. Each item carries the ' +
         "story's CSF importPath so you can open the source file the story comes from, the " +
-        'component it belongs to, plus the pin location, story args at comment time, whether ' +
-        'a screenshot exists, and the full message history. Defaults to state=open (the ' +
+        'component it belongs to, the viewport it was written in, plus the pin location, ' +
+        'story args at comment time, whether a screenshot exists, and the full message history. Defaults to state=open (the ' +
         'feedback still awaiting work).\n\n' +
         'A comment is filed against the component the reviewer was pointing at, which is ' +
         'not always the story they had open — see seenOnStoryId. Fix the component named in ' +

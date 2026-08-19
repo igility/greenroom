@@ -374,6 +374,29 @@ export const MIGRATIONS: Migration[] = [
   ALTER TABLE sessions ADD COLUMN magic_link_token TEXT REFERENCES magic_links(token);
   CREATE INDEX idx_sessions_magic_link ON sessions(magic_link_token);
   `,
+
+  /*
+   * v9 — record which viewport a comment was left in.
+   *
+   * A thread already stored the pixel width of the preview at the moment of the pin,
+   * which is a fact but not the one anybody asks for. "Is this broken on mobile" is
+   * answered by what the reviewer SELECTED — Storybook's named viewport — and a width
+   * alone cannot distinguish a deliberate 390px mobile preset from a reviewer who
+   * happened to have the panel docked and the window narrow.
+   *
+   * It matters most to whoever fixes the comment. A defect reported at mobile width may
+   * not reproduce at desktop width at all, and an agent handed "the label wraps" with no
+   * viewport will go looking at 1440px and find nothing wrong.
+   *
+   * Nullable, and legitimately so in three cases: comments left before this existed,
+   * comments left with no viewport preset selected, and comments left from the reviewer
+   * shell, which has no viewport control at all. The width is still recorded in every
+   * one of them, so nothing is lost — only the reviewer's stated intent is absent, and
+   * inventing it would be worse than its absence.
+   */
+  `
+  ALTER TABLE threads ADD COLUMN viewport_label TEXT;
+  `,
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the

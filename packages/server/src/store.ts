@@ -539,8 +539,9 @@ export class Store {
         .prepare(
           `INSERT INTO threads
              (id, story_id, seen_on_story_id, build_id, state, selector, x, y, viewport_w, viewport_h,
-              args_json, screenshot_attachment_id, created_by_kind, created_by_id, created_by_name, created_at)
-           VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              viewport_label, args_json, screenshot_attachment_id, created_by_kind, created_by_id,
+              created_by_name, created_at)
+           VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           threadId,
@@ -552,6 +553,7 @@ export class Store {
           input.pin?.y ?? null,
           input.pin?.viewportWidth ?? null,
           input.pin?.viewportHeight ?? null,
+          input.pin?.viewportLabel ?? null,
           input.args ? JSON.stringify(input.args) : null,
           input.screenshotAttachmentId ?? null,
           by.kind,
@@ -1512,6 +1514,7 @@ interface ThreadRow {
   x: number | null;
   y: number | null;
   viewport_w: number | null;
+  viewport_label?: string | null;
   viewport_h: number | null;
   args_json: string | null;
   screenshot_attachment_id: string | null;
@@ -1618,6 +1621,7 @@ const rowToThread = (r: ThreadRow): Thread => ({
           y: r.y,
           viewportWidth: r.viewport_w ?? 0,
           viewportHeight: r.viewport_h ?? 0,
+          viewportLabel: r.viewport_label ?? null,
         }
       : null,
   args: r.args_json ? (JSON.parse(r.args_json) as Record<string, unknown>) : null,

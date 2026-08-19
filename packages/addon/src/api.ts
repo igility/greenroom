@@ -9,7 +9,17 @@ export interface FeedbackItem {
     seenOnStoryId: string | null;
     buildId: string;
     state: ThreadState;
-    pin: { selector: string; x: number; y: number } | null;
+    /** The server sends the full pin; this used to declare only three of its fields, so
+     *  the viewport a comment was written in was arriving and being dropped on the floor
+     *  by the type rather than by any decision. */
+    pin: {
+      selector: string;
+      x: number;
+      y: number;
+      viewportWidth: number;
+      viewportHeight: number;
+      viewportLabel: string | null;
+    } | null;
     screenshotAttachmentId: string | null;
     createdBy: { kind: string; name: string };
     createdAt: string;
@@ -179,7 +189,16 @@ export class Sidecar {
     regionStoryId?: string | null;
     buildId: string;
     body: string;
-    pin?: { selector: string; x: number; y: number; viewportWidth: number; viewportHeight: number };
+    pin?: {
+      selector: string;
+      x: number;
+      y: number;
+      viewportWidth: number;
+      viewportHeight: number;
+      /** Storybook's named viewport when one is selected — what makes "broken on
+       *  mobile" answerable rather than inferred from a pixel count. */
+      viewportLabel?: string | null;
+    };
     args?: Record<string, unknown>;
     screenshotAttachmentId?: string;
   }) {

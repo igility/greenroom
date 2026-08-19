@@ -118,6 +118,15 @@ export interface Pin {
   y: number;
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * The named viewport the reviewer had selected — Storybook's own key, e.g. `mobile`.
+   *
+   * Null is a real answer, not a gap: no preset selected, a surface with no viewport
+   * control, or a comment left before this was recorded. The width above is always
+   * there; this says whether the reviewer MEANT that width, which is the difference
+   * between "broken on mobile" and "the window happened to be narrow".
+   */
+  viewportLabel: string | null;
 }
 
 export interface Thread {

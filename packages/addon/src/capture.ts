@@ -141,6 +141,10 @@ export function enterPinMode(onCapture: (c: Capture) => void, onCancel?: () => v
       y: e.clientY,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
+      // The preview knows how wide it is; only the manager knows what the reviewer
+      // SELECTED, so the panel fills this in at submit time. Null here is honest rather
+      // than a placeholder — a surface with no viewport control leaves it null.
+      viewportLabel: null,
     };
 
     // Remove the overlay before screenshotting so the capture is clean.

@@ -19,6 +19,8 @@ import type { Story } from '@igility/greenroom-shared';
 // small enough that it does not become a second implementation to keep in step.
 const storybookApi = { getCurrentStoryData: vi.fn(), selectStory: vi.fn() };
 let parameters: Record<string, unknown> = {};
+/** Storybook's globals, where the selected viewport lives. */
+let globals: Record<string, unknown> = {};
 let channelHandlers: Record<string, (...a: unknown[]) => void> = {};
 const channelEmit = vi.fn();
 
@@ -27,6 +29,7 @@ vi.mock('storybook/manager-api', () => ({
   types: { PANEL: 'panel' },
   useStorybookApi: () => storybookApi,
   useParameter: () => parameters,
+  useGlobals: () => [globals, vi.fn()],
   useChannel: (handlers: Record<string, (...a: unknown[]) => void>) => {
     channelHandlers = handlers;
     return channelEmit;
@@ -126,6 +129,7 @@ function serving(story: PanelStory, rows: PanelStory[] = [story], feedback: unkn
 
 beforeEach(() => {
   parameters = {};
+  globals = {};
   localStorage.setItem(CONN, JSON.stringify({ url: 'http://sidecar.test', token: 't' }));
   serving(storyRow());
 });

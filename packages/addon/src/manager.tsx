@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { addons, types, useChannel, useParameter, useStorybookApi } from 'storybook/manager-api';
+import { addons, types, useChannel, useGlobals, useParameter, useStorybookApi } from 'storybook/manager-api';
 import { Button, IconButton, TooltipNote, WithTooltip } from 'storybook/internal/components';
 import { useTheme, type Theme } from 'storybook/theming';
 import {
@@ -111,6 +111,25 @@ export function actionsFor(state: StoryState, changed: boolean): ActionDef[] {
     return [{ ...APPROVE, label: 'Approve again' }, ...ACTIONS.approved];
   }
   return ACTIONS[state];
+}
+
+/**
+ * The named viewport the reviewer has selected, or null when they have not chosen one.
+ *
+ * Storybook declares this global as `GlobalState | GlobalState['value']` — an object OR
+ * a bare string — so both shapes are legitimate and both have to be read. Anything else
+ * yields null rather than a guess: a comment labelled with a viewport the reviewer never
+ * picked is worse than one carrying no label, because the pixel width is recorded either
+ * way and only the stated intent would be fabricated.
+ */
+function viewportLabelOf(globals: Record<string, unknown>): string | null {
+  const raw = globals?.viewport;
+  if (typeof raw === 'string') return raw || null;
+  if (raw && typeof raw === 'object') {
+    const value = (raw as { value?: unknown }).value;
+    return typeof value === 'string' && value ? value : null;
+  }
+  return null;
 }
 
 /*
@@ -346,6 +365,18 @@ const Thread: React.FC<{
         <span style={{ fontWeight: 600 }} title={item.thread.pin?.selector ?? undefined}>
           {item.thread.state === 'open' ? '● ' : item.thread.state === 'addressed' ? '◐ ' : '○ '}
           {item.thread.pin ? 'Pinned comment' : 'General comment'}
+          {/* Which viewport it was written in. Only shown when the reviewer actually
+              chose one — a width on its own is not a claim about mobile, and labelling
+              every comment "1440px" would be noise on the surface where it is least
+              needed. */}
+          {item.thread.pin?.viewportLabel ? (
+            <span
+              style={{ fontWeight: 400, color: theme.textMutedColor }}
+              title={`Left at ${item.thread.pin.viewportWidth}×${item.thread.pin.viewportHeight}`}
+            >
+              {` · ${item.thread.pin.viewportLabel}`}
+            </span>
+          ) : null}
           {item.story.storyId !== viewingStoryId ? (
             <span style={{ fontWeight: 400, color: theme.textMutedColor }}>
               {' · on '}
@@ -474,6 +505,7 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
    * served by the sidecar is same-origin and the session cookie authenticates it.
    */
   const param = useParameter<{ url?: string; token?: string }>(PARAM_KEY, {});
+  const [globals] = useGlobals();
   const storyId = (api.getCurrentStoryData?.() as { id?: string } | undefined)?.id;
 
   // Hosted wins over anything stored: a reviewer arriving on a magic link must not
@@ -805,7 +837,10 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         regionStoryId: pending.regionStoryId,
         buildId: build.id,
         body: comment.trim(),
-        pin: pending.pin,
+        // The width comes from the preview, which knows how wide it is; the NAME comes
+        // from the manager, which is the only side that knows what the reviewer picked.
+        // A width alone cannot tell a deliberate mobile preset from a narrow window.
+        pin: { ...pending.pin, viewportLabel: viewportLabelOf(globals) },
         args: pending.args,
         screenshotAttachmentId,
       });
