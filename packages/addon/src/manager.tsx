@@ -294,6 +294,10 @@ const Thread: React.FC<{
   onOpenStory?: (storyId: string) => void;
   /** Scroll the commented tile into view and throb its outline. */
   onReveal?: (regionStoryId: string, status?: { flagged?: boolean; resolved?: boolean }) => void;
+  /** Scroll to the exact element a comment was pinned to. Most comments are not on tiles —
+   *  a decision card, a swatch, a question — and those pages are long enough that landing
+   *  at the top is the same as not answering "where is it". */
+  onRevealPin?: (selector: string, status?: { flagged?: boolean; resolved?: boolean }) => void;
   /** The story actually on screen, regardless of how the list is scoped. */
   currentStoryId?: string;
   /** Navigate even when not surveying everything. */
@@ -305,6 +309,7 @@ const Thread: React.FC<{
   viewingStoryId,
   onOpenStory,
   onReveal,
+  onRevealPin,
   currentStoryId,
   goToStory,
 }) => {
@@ -339,13 +344,21 @@ const Thread: React.FC<{
     item.thread.state === 'resolved' ? { resolved: true } : { flagged: true };
   const surfaceId = item.thread.seenOnStoryId ?? item.story.storyId;
   const regionId = item.thread.seenOnStoryId ? item.story.storyId : null;
+  const pinSelector = item.thread.pin?.selector ?? null;
   const show = () => {
     const elsewhere = !!currentStoryId && surfaceId !== currentStoryId;
     if (elsewhere) (goToStory ?? onOpenStory)?.(surfaceId);
-    if (regionId && onReveal) {
-      // Give the story time to mount before asking for a tile inside it.
-      window.setTimeout(() => onReveal(regionId, threadStatus), elsewhere ? 900 : 0);
-    }
+    // A tile when the comment routed through one, otherwise the pin's own selector.
+    // Without the fallback the picture answers "where is it" only for contact sheets,
+    // and every comment on a long page — which is most of them — lands the reviewer at
+    // the top to hunt for the card by eye.
+    const go = regionId && onReveal
+      ? () => onReveal(regionId, threadStatus)
+      : pinSelector && onRevealPin
+        ? () => onRevealPin(pinSelector, threadStatus)
+        : null;
+    // Give the story time to mount before asking for anything inside it.
+    if (go) window.setTimeout(go, elsewhere ? 900 : 0);
   };
 
   return (
@@ -407,12 +420,16 @@ const Thread: React.FC<{
         </span>
       </div>
       {item.thread.screenshotAttachmentId ? (
-        onReveal || onOpenStory ? (
+        onReveal || onRevealPin || onOpenStory ? (
           // The picture is the most identifiable thing in the card and the most obvious
           // thing to reach for, so it goes to the story too rather than only the title.
           <button
             type="button"
-            title={regionId ? `Show me on ${item.story.title}` : `Go to ${item.story.title}`}
+            title={
+              regionId || pinSelector
+                ? `Show me on ${item.story.title}`
+                : `Go to ${item.story.title}`
+            }
             onClick={show}
             style={{ display: 'block', background: 'none', border: 0, padding: 0, cursor: 'pointer' }}
           >
@@ -616,6 +633,21 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
     },
     [EVENTS.CANCEL_PIN_MODE]: () => setArmed(false),
     [EVENTS.REGION_SELECTED]: (regionStoryId: string) => setSelectedRegion(regionStoryId),
+    /*
+     * The preview's answer to "show me": did the thing turn out to be there.
+     *
+     * Only said when it was NOT. A successful reveal scrolls the page, which is its own
+     * confirmation, and a message on top of that is noise. A failed one moves nothing —
+     * indistinguishable from a dead button unless it says so, and the reviewer's next
+     * conclusion is that the feature is broken rather than that the pin is stale.
+     */
+    [EVENTS.REVEAL_RESULT]: ({ found }: { found: boolean }) => {
+      if (!found) {
+        setNotice(
+          "Couldn't find that on this build — the element it was pinned to has moved or gone.",
+        );
+      }
+    },
   });
 
   useEffect(() => {
@@ -1263,6 +1295,9 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
             onOpenStory={scope === 'all' ? (id) => api.selectStory(id) : undefined}
             onReveal={(regionStoryId, status) =>
               emit(EVENTS.REVEAL_REGION, { regionStoryId, status })
+            }
+            onRevealPin={(selector, status) =>
+              emit(EVENTS.REVEAL_REGION, { selector, status })
             }
             currentStoryId={storyId}
             goToStory={(id) => api.selectStory(id)}

@@ -220,3 +220,20 @@ textarea, input[type='text'] {
 }
 .gate-form button:disabled { opacity: 0.6; cursor: default; }
 .gate-note { margin-top: 12px; min-height: 1.2em; }
+
+/* The comment's picture is a control — it scrolls the page to the thing being discussed.
+   Styled as the image it already was, so it reads as a picture that responds rather than
+   as a button with a picture in it. */
+.thread .shot {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+  width: 100%;
+  text-align: left;
+}
+.thread .shot:focus-visible {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 2px;
+}

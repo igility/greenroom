@@ -12,6 +12,8 @@ export const EVENTS = {
   FINGERPRINT: `${ADDON_ID}/fingerprint`,
   STATUS_MAP: `${ADDON_ID}/status-map`,
   REVEAL_REGION: `${ADDON_ID}/reveal-region`,
+  /** Preview's answer to a reveal: did the thing actually turn out to be there. */
+  REVEAL_RESULT: `${ADDON_ID}/reveal-result`,
   REGION_SELECTED: `${ADDON_ID}/region-selected`,
 } as const;
 
@@ -24,6 +26,7 @@ export const MSG = {
   STATUS_MAP: 'greenroom:status-map',
   REGION_SELECTED: 'greenroom:region-selected',
   REVEAL_REGION: 'greenroom:reveal-region',
+  REVEAL_RESULT: 'greenroom:reveal-result',
 } as const;
 
 /** The single injected stylesheet that paints review status onto declared regions. */

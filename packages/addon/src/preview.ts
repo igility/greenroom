@@ -204,9 +204,56 @@ export function paintStatus(statuses: Record<string, RegionStatus>, selected?: s
  */
 export function revealRegion(regionStoryId: string, hinted?: RegionStatus | null) {
   const sel = `[${TILE_ATTR}="${CSS.escape(regionStoryId)}"]`;
+  return revealAt(sel, colourOf(hinted) ?? statusColour(regionStoryId) ?? '#2563eb');
+}
+
+/**
+ * The same answer for a comment that is not on a tile.
+ *
+ * Most comments are not. A decision card, a swatch, a question on a page — those are
+ * pinned by SELECTOR, not by region, and a decisions page runs to dozens of screens of
+ * scroll. Sending the reviewer to the top of it and leaving them to find the card by eye
+ * is the same as not answering at all.
+ *
+ * 🔴 Returns false when the selector does not resolve, and the caller must say so. A pin
+ * whose selector has gone stale is precisely the failure this project keeps meeting, and a
+ * button that silently does nothing is indistinguishable from one that is broken — which
+ * is how a reviewer learns to stop trusting the feature rather than to report the fault.
+ */
+export function revealPin(selector: string, hinted?: RegionStatus | null): boolean {
+  try {
+    return revealAt(selector, colourOf(hinted) ?? '#2563eb');
+  } catch {
+    // finder produces the selector, so an invalid one means the stored pin is corrupt
+    // rather than that the element is missing. Same outcome for the reviewer either way.
+    return false;
+  }
+}
+
+/**
+ * Beyond this many viewports away, jump instead of gliding.
+ *
+ * Two reasons, and the first is that smooth simply does not work at distance: Chrome
+ * abandons a `behavior:'smooth'` scroll of ~20,000px and leaves the page exactly where it
+ * was — silently, with scrollIntoView reporting nothing wrong. Measured on a 22,316px
+ * decisions page: instant lands at 20,304, smooth is still at 0 six seconds later. Every
+ * long page hits this, which is every page a reviewer most needs help navigating.
+ *
+ * The second is that it would be the wrong thing even if it worked. Gliding through
+ * thirty screens of content is not orientation, it is a blur with a wait attached. The
+ * halo is what says "here", and it reads better arriving than travelling.
+ */
+const SMOOTH_WITHIN_VIEWPORTS = 2;
+
+function revealAt(sel: string, base: string): boolean {
   const el = document.querySelector<HTMLElement>(sel);
   if (!el) return false;
-  el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+  const distance = Math.abs(el.getBoundingClientRect().top - window.innerHeight / 2);
+  el.scrollIntoView({
+    behavior: distance > window.innerHeight * SMOOTH_WITHIN_VIEWPORTS ? 'auto' : 'smooth',
+    block: 'center',
+    inline: 'nearest',
+  });
 
   let sheet = document.getElementById(REVEAL_STYLE_ID);
   if (!sheet) {
@@ -225,7 +272,6 @@ export function revealRegion(regionStoryId: string, hinted?: RegionStatus | null
   // status map arrives on a fetch while the reveal fires on a timer, so revealing a tile
   // just after navigating to its surface would colour it neutral even though it is
   // flagged. Fall back to what we know, then to neutral.
-  const base = colourOf(hinted) ?? statusColour(regionStoryId) ?? '#2563eb';
   sheet.textContent =
     `@keyframes greenroom-reveal{` +
     `0%{box-shadow:0 0 0 0 ${rgba(base, 0)},0 0 0 0 ${rgba(base, 0)}}` +
@@ -278,10 +324,23 @@ channel.on(
 );
 channel.on(
   EVENTS.REVEAL_REGION,
-  (payload: string | { regionStoryId: string; status?: RegionStatus | null }) =>
-    typeof payload === 'string'
-      ? revealRegion(payload)
-      : revealRegion(payload.regionStoryId, payload.status),
+  (
+    payload:
+      | string
+      | { regionStoryId?: string; selector?: string; status?: RegionStatus | null },
+  ) => {
+    const found =
+      typeof payload === 'string'
+        ? revealRegion(payload)
+        : payload.regionStoryId
+          ? revealRegion(payload.regionStoryId, payload.status)
+          : payload.selector
+            ? revealPin(payload.selector, payload.status)
+            : false;
+    // Told, not assumed. The panel needs to distinguish "scrolled you to it" from "that
+    // pin no longer resolves on this build", and only the preview can know which.
+    channel.emit(EVENTS.REVEAL_RESULT, { found });
+  },
 );
 
 // Review mode: the shell drives the same capture over postMessage.
@@ -298,6 +357,17 @@ window.addEventListener('message', (e: MessageEvent) => {
     const statuses = (e.data as { statuses?: Record<string, RegionStatus> }).statuses ?? {};
     rememberStatuses(statuses);
     paintStatus(statuses);
+  } else if (type === MSG.REVEAL_REGION) {
+    // The reviewer's shell asking "where is this comment". Same answer as the panel's,
+    // over the transport the shell has — it is an iframe on another origin's page, not a
+    // Storybook manager, so it cannot use the channel.
+    const d = e.data as { regionStoryId?: string; selector?: string; status?: RegionStatus | null };
+    const found = d.regionStoryId
+      ? revealRegion(d.regionStoryId, d.status)
+      : d.selector
+        ? revealPin(d.selector, d.status)
+        : false;
+    window.parent?.postMessage({ type: MSG.REVEAL_RESULT, found }, '*');
   }
 });
 

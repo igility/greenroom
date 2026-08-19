@@ -309,6 +309,17 @@ window.addEventListener('message', (e) => {
   if (e.origin !== window.location.origin) return;
   const data = e.data;
   if (!data || !state.build) return;
+  if (data.type === 'greenroom:reveal-result') {
+    // Said only when the element was NOT found. A successful reveal scrolls the page,
+    // which is its own confirmation; a failed one moves nothing, and without a word that
+    // is indistinguishable from a broken button.
+    if (!data.found) {
+      state.notice =
+        "Couldn't find that on this version of the page — it has moved or been removed since the comment was left.";
+      render();
+    }
+    return;
+  }
   if (data.type === 'greenroom:fingerprint' && data.storyId && data.hash) {
     // The preview has rendered and its listener is live, so decorate now — BEFORE the
     // dedupe guard below. That guard exists to avoid re-uploading a hash we already
@@ -575,7 +586,17 @@ function threadHtml(item) {
         <span>${t.pin ? 'Pinned comment' : 'General'} by <strong>${esc(t.createdBy.name)}</strong>${t.createdBy.kind === 'agent' ? ' (agent)' : ''} · ${esc(shortTime(t.createdAt))}${seenOn ? ` · on ${esc(seenOn)}` : ''}${t.pin?.viewportLabel ? ` · <span title="Left at ${t.pin.viewportWidth}\u00d7${t.pin.viewportHeight}">${esc(t.pin.viewportLabel)}</span>` : ''}</span>
         <span>${esc(t.state)}</span>
       </div>
-      ${t.screenshotAttachmentId ? `<img src="/api/attachments/${encodeURIComponent(t.screenshotAttachmentId)}" alt="Comment screenshot" loading="lazy" />` : ''}
+      ${
+        t.screenshotAttachmentId
+          ? // The picture is the obvious thing to reach for, so it answers "where is this".
+            // A decisions page runs to dozens of screens; opening it at the top and leaving
+            // the reviewer to find the card by eye is the same as not answering.
+            `<button class="shot" data-reveal${t.pin?.selector ? ` data-selector="${esc(t.pin.selector)}"` : ''}${
+              t.seenOnStoryId ? ` data-region="${esc(t.storyId)}"` : ''
+            } data-story="${esc(t.seenOnStoryId || t.storyId)}" title="Show me on the page">` +
+            `<img src="/api/attachments/${encodeURIComponent(t.screenshotAttachmentId)}" alt="Comment screenshot" loading="lazy" /></button>`
+          : ''
+      }
       ${messages}
       <div class="reply-row">
         <input type="text" placeholder="Reply…" data-reply-input />
@@ -586,6 +607,33 @@ function threadHtml(item) {
 }
 
 function wireEvents(current) {
+  /*
+   * "Show me" from a comment's picture.
+   *
+   * Navigating first when the comment belongs to another story, then asking the preview to
+   * scroll — with a pause, because the frame has to mount before anything inside it can be
+   * found. A tile when the comment routed through one, otherwise the pin's own selector,
+   * which is what every comment on a long page has instead.
+   */
+  document.querySelectorAll('[data-reveal]').forEach((el) =>
+    el.addEventListener('click', async () => {
+      const { story, region, selector } = el.dataset;
+      if (!region && !selector) return;
+      const elsewhere = story && story !== state.currentStoryId;
+      if (elsewhere) await selectStory(story);
+      window.setTimeout(
+        () =>
+          regions.frame?.contentWindow?.postMessage(
+            region
+              ? { type: 'greenroom:reveal-region', regionStoryId: region }
+              : { type: 'greenroom:reveal-region', selector },
+            '*',
+          ),
+        elsewhere ? 900 : 0,
+      );
+    }),
+  );
+
   document.getElementById('sweep-btn')?.addEventListener('click', sweep);
   document.getElementById('batch-btn')?.addEventListener('click', () => {
     state.confirmBatch = true;
