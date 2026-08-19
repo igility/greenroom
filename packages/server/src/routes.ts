@@ -96,17 +96,49 @@ export function registerRoutes(
     if (bytes.byteLength > MAX_UPLOAD_BYTES) {
       throw new HttpError(413, `Upload exceeds the ${MAX_UPLOAD_BYTES}-byte limit.`);
     }
-    // Opt-in, and named for what it permits rather than for silencing the check.
+    // Opt-in, and named for what it permits rather than for silencing the check. The
+    // list forms are the ones worth using: they assert WHAT is changing, and an assertion
+    // that does not match the artifact fails, where a bare yes is answered yes every time.
+    const list = (q: string) =>
+      (c.req.query(q) ?? '')
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
     const allowStoryChanges = ['1', 'true', 'yes'].includes(
       (c.req.query('allowStoryChanges') ?? '').toLowerCase(),
     );
     const result = store.ingestBuildZip(
       bytes,
-      { label, gitSha, allowStoryChanges },
+      {
+        label,
+        gitSha,
+        allowStoryChanges,
+        allowAdded: list('allowAdded'),
+        allowRemoved: list('allowRemoved'),
+      },
       principalOf(c),
     );
     return c.json(result, result.created ? 201 : 200);
   });
+
+  /*
+   * Named audience scopes — the vocabulary an upload claim is written in.
+   *
+   * Admin-only to write, because a scope is what an override is checked AGAINST: anyone
+   * who can redefine `batch2` can make any build satisfy a claim of `batch2`, which would
+   * turn the gate back into the confirmation it replaced.
+   */
+  app.get('/api/scopes', requirePrincipal(), (c) => c.json({ scopes: store.listScopes() }));
+  app.put('/api/scopes/:name', requirePrincipal('admin'), async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { groups?: unknown };
+    if (!Array.isArray(body.groups)) throw new HttpError(400, 'Send { groups: string[] }.');
+    return c.json({
+      scope: store.setScope(c.req.param('name'), body.groups.map(String), principalOf(c)),
+    });
+  });
+  app.delete('/api/scopes/:name', requirePrincipal('admin'), (c) =>
+    c.json({ deleted: store.deleteScope(c.req.param('name')) }),
+  );
 
   app.get('/api/builds', requirePrincipal(), (c) => c.json({ builds: store.listBuilds() }));
   app.get('/api/builds/latest', requirePrincipal(), (c) => c.json({ build: store.latestBuild() }));

@@ -4,13 +4,13 @@ import { serve } from '@hono/node-server';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { openDb } from './db.js';
-import type { StoryDelta } from './store.js';
+import type { StoryDelta, StoryGroup } from './store.js';
 import { Store } from './store.js';
 import { zipDir } from './zip.js';
 
-/** How many names to print before summarising the rest. Enough to recognise the shape of
- *  what moved; short enough that a 245-story delta is still readable in a terminal. */
-const NAMES_SHOWN = 12;
+/** How many groups to print before summarising the rest. Groups are far coarser than
+ *  story names, so a whole delta usually fits. */
+const GROUPS_SHOWN = 14;
 
 function printDelta(d: StoryDelta, out: (s: string) => void = console.error) {
   const live = d.liveBuild ? `"${d.liveBuild.label}"` : 'nothing (first build)';
@@ -18,24 +18,54 @@ function printDelta(d: StoryDelta, out: (s: string) => void = console.error) {
   out(`  incoming: ${d.incomingCount} stories`);
   out(`  ${d.added.length} added, ${d.removed.length} removed`);
 
-  const list = (label: string, names: string[]) => {
-    if (!names.length) return;
+  /*
+   * Groups rather than story names, and BOTH hierarchies.
+   *
+   * The reviewer's sidebar groups by title; a build-scope variable selects by directory.
+   * They usually agree. Where they do not, a build scoped by directory ships a section
+   * the reviewer will see under a different name — which is invisible unless both are
+   * printed side by side.
+   */
+  const section = (label: string, groups: StoryGroup[]) => {
+    if (!groups.length) return;
     out(`\n  ${label}:`);
-    for (const n of names.slice(0, NAMES_SHOWN)) out(`    ${n}`);
-    if (names.length > NAMES_SHOWN) out(`    … and ${names.length - NAMES_SHOWN} more`);
+    for (const g of groups.slice(0, GROUPS_SHOWN)) {
+      const paths = g.pathGroups.join(', ');
+      out(`    ${String(g.count).padStart(4)}  ${g.group}`);
+      out(`          ${paths}`);
+    }
+    if (groups.length > GROUPS_SHOWN) {
+      out(`    … and ${groups.length - GROUPS_SHOWN} more sections`);
+    }
   };
+  section('removed', d.removedGroups);
+  section('added', d.addedGroups);
 
-  list(
-    'removed',
-    d.removed.map((r) => {
+  // Removals carrying review history are named individually — a count cannot convey
+  // which client objection is about to go quiet.
+  const costly = d.removed.filter((r) => r.totalThreads > 0 || r.state === 'approved');
+  if (costly.length) {
+    out('\n  removals carrying review history:');
+    for (const r of costly.slice(0, GROUPS_SHOWN)) {
       const marks = [
         r.openThreads ? `${r.openThreads} open comment${r.openThreads === 1 ? '' : 's'}` : '',
         r.state === 'approved' ? 'approved' : '',
       ].filter(Boolean);
-      return `${r.title}${marks.length ? `  [${marks.join(', ')}]` : ''}`;
-    }),
-  );
-  list('added', d.added.map((a) => a.title));
+      out(`    ${r.title}  [${marks.join(', ')}]`);
+    }
+    if (costly.length > GROUPS_SHOWN) out(`    … and ${costly.length - GROUPS_SHOWN} more`);
+  }
+
+  if (d.groupMismatches.length) {
+    out('\n  the two hierarchies disagree here:');
+    for (const m of d.groupMismatches) out(`    ${m}`);
+  }
+
+  if (d.unmatchedClaims.length) {
+    // Claimed and not present. Ordinary when a named scope covers groups already live —
+    // and also what it looks like to believe you built something you did not.
+    out(`\n  ⚠ claimed but not in this build: ${d.unmatchedClaims.join(', ')}`);
+  }
 
   if (d.concerns.length) {
     out('');
@@ -87,12 +117,15 @@ if (command === 'serve') {
       label: { type: 'string' },
       'git-sha': { type: 'string' },
       'allow-story-changes': { type: 'boolean', default: false },
+      'allow-added': { type: 'string' },
+      'allow-removed': { type: 'string' },
     },
   });
   const dir = positionals[0];
   if (!dir) {
     console.error(
-      'Usage: greenroom upload <storybook-static-dir> [--url URL] [--token TOKEN] [--label LABEL] [--git-sha SHA] [--allow-story-changes]',
+      'Usage: greenroom upload <storybook-static-dir> [--url URL] [--token TOKEN] [--label LABEL] [--git-sha SHA]\n' +
+        '                        [--allow-added <groups|scope>] [--allow-removed <groups|scope>] [--allow-story-changes]',
     );
     process.exit(1);
   }
@@ -105,6 +138,8 @@ if (command === 'serve') {
   if (values.label) params.set('label', values.label);
   if (values['git-sha']) params.set('gitSha', values['git-sha']);
   if (values['allow-story-changes']) params.set('allowStoryChanges', '1');
+  if (values['allow-added']) params.set('allowAdded', values['allow-added']);
+  if (values['allow-removed']) params.set('allowRemoved', values['allow-removed']);
   const url = `${values.url.replace(/\/$/, '')}/api/builds?${params}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -127,7 +162,22 @@ if (command === 'serve') {
     // rather than having to go and diff two index.json files.
     console.error('\nRefused — this upload would change what the client can see.\n');
     printDelta(json.details);
-    console.error('\nRe-run with --allow-story-changes if that is intended.\n');
+    /*
+     * Names the instrument, never the argument.
+     *
+     * Printing a ready-made `--allow-added "…"` would reduce this to one paste, which is
+     * the same keystroke as a bare confirmation and would defeat the point. The operator
+     * reads the sections above and asserts which of them they meant to ship — and typing
+     * "Pages/Clinical" into a components deploy is a different act from typing yes.
+     */
+    console.error(
+      '\n  If this is intended, claim it — the claim is checked against the build:\n' +
+        '    --allow-added   <sections, or a scope name>\n' +
+        '    --allow-removed <sections, or a scope name>\n' +
+        '  Define a scope once so the claim reads in your own words:\n' +
+        '    greenroom scope set batch2 --groups "Pages/Clinical,Pages/Commerce"\n' +
+        '  --allow-story-changes still permits everything, and asserts nothing.\n',
+    );
     process.exit(1);
   }
   if (!res.ok) {
@@ -167,7 +217,7 @@ if (command === 'serve') {
     // is wrong teaches nobody what normal looks like.
     if (json.delta) printDelta(json.delta, console.log);
   }
-} else if (command === 'link' || command === 'token' || command === 'reviewer') {
+} else if (command === 'link' || command === 'token' || command === 'reviewer' || command === 'scope') {
   /*
    * Admin commands, over HTTP rather than by opening the database.
    *
@@ -191,6 +241,7 @@ if (command === 'serve') {
       expires: { type: 'string' },
       all: { type: 'boolean', default: false },
       'end-all-sessions': { type: 'boolean', default: false },
+      groups: { type: 'string' },
       json: { type: 'boolean', default: false },
     },
   });
@@ -275,6 +326,39 @@ The admin key defaults to GREENROOM_ADMIN_KEY.`;
         );
       }
     });
+  } else if (command === 'scope' && sub === 'set') {
+    if (!arg || !values.groups) {
+      console.error('Usage: greenroom scope set <name> --groups "Pages/Clinical,Pages/Commerce"');
+      process.exit(1);
+    }
+    const out = await call('PUT', `/api/scopes/${encodeURIComponent(arg)}`, {
+      groups: values.groups.split(',').map((g) => g.trim()).filter(Boolean),
+    });
+    const scope = out.scope as { name: string; groups: string[] };
+    emit(out, () => {
+      console.log(`Scope "${scope.name}" = ${scope.groups.join(', ')}`);
+      console.log(`\nClaim it on upload with:  --allow-added ${scope.name}`);
+    });
+  } else if (command === 'scope' && sub === 'list') {
+    const out = await call('GET', '/api/scopes');
+    const scopes = out.scopes as { name: string; groups: string[]; createdBy: string }[];
+    emit(scopes, () => {
+      if (!scopes.length) {
+        console.log('No scopes defined.');
+        console.log('\nA scope names what an audience has been shown, so an upload can be');
+        console.log('claimed in the project\'s own words rather than by listing groups:');
+        console.log('  greenroom scope set batch2 --groups "Pages/Clinical,Pages/Commerce"');
+        return;
+      }
+      for (const sc of scopes) console.log(`${sc.name.padEnd(16)} ${sc.groups.join(', ')}`);
+    });
+  } else if (command === 'scope' && sub === 'rm') {
+    if (!arg) {
+      console.error('Usage: greenroom scope rm <name>');
+      process.exit(1);
+    }
+    const out = await call('DELETE', `/api/scopes/${encodeURIComponent(arg)}`);
+    emit(out, () => console.log(out.deleted ? `Removed "${arg}".` : `No scope named "${arg}".`));
   } else if (command === 'link' && sub === 'new') {
     if (!arg) {
       console.error('Usage: greenroom link new <reviewer-id> [--expires <ISO date>]');
@@ -365,7 +449,7 @@ The admin key defaults to GREENROOM_ADMIN_KEY.`;
   }
 } else {
   console.error(
-    `Unknown command: ${command}\nUsage: greenroom [serve|upload|link|token|reviewer]`,
+    `Unknown command: ${command}\nUsage: greenroom [serve|upload|link|token|reviewer|scope]`,
   );
   process.exit(1);
 }

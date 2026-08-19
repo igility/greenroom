@@ -44,12 +44,29 @@ export interface RemovedStory {
   storyId: string;
   title: string;
   componentTitle: string;
+  group: string;
+  pathGroup: string;
   /** Where the story had got to. Losing an `approved` one erases a sign-off. */
   state: StoryState;
   /** Threads still awaiting an answer. These are the reason removals are gated: the
    *  comment survives in the database and becomes unreachable on the surface. */
   openThreads: number;
   totalThreads: number;
+}
+
+/**
+ * A block of stories moving together, as the reviewer's sidebar groups them.
+ *
+ * `pathGroups` is carried alongside because the two hierarchies can disagree, and the
+ * disagreement is worth seeing: on the project this was built for, 32 stories titled
+ * `Pages/Marketing` live in `stories/pages/system-utility`, so a build scoped by
+ * DIRECTORY ships marketing pages to anyone told the batch contains utility screens.
+ * Reporting only one of the two hides that permanently.
+ */
+export interface StoryGroup {
+  group: string;
+  count: number;
+  pathGroups: string[];
 }
 
 /**
@@ -63,13 +80,56 @@ export interface RemovedStory {
  */
 export interface StoryDelta {
   liveBuild: { id: string; label: string } | null;
-  added: { storyId: string; title: string; componentTitle: string }[];
+  added: { storyId: string; title: string; componentTitle: string; group: string; pathGroup: string }[];
   removed: RemovedStory[];
+  addedGroups: StoryGroup[];
+  removedGroups: StoryGroup[];
   liveCount: number;
   incomingCount: number;
+  /** Groups the caller claimed that are not in this build at all. Not fatal — claiming a
+   *  named scope whose other groups are already live is ordinary — but printed, because
+   *  it also describes someone who thinks they built something they did not. */
+  unmatchedClaims: string[];
+  /** Where the title hierarchy and the directory hierarchy disagree about the same
+   *  stories. Never blocks; always shown. */
+  groupMismatches: string[];
   /** Why this delta is being gated, empty when it is routine. Each entry is shown to
    *  whoever ran the upload, so it reads as a sentence rather than a code. */
   concerns: string[];
+}
+
+/** What an upload is allowed to change, as claimed by whoever ran it. */
+export interface UploadClaims {
+  /** Groups or scope names the caller asserts this build adds. */
+  allowAdded?: string[];
+  /** Groups or scope names the caller asserts this build removes. */
+  allowRemoved?: string[];
+  /** The blunt override: permits anything. Kept for first-run and automation, and named
+   *  so it reads as the weaker instrument it is. */
+  allowStoryChanges?: boolean;
+}
+
+export interface Scope {
+  name: string;
+  groups: string[];
+  createdAt: string;
+  createdBy: string;
+}
+
+/**
+ * The reviewer-facing group of a story: the first two segments of its Storybook title,
+ * which is the level the sidebar collapses to and the level people name in conversation
+ * ("clinical", "auth"). One segment is used when that is all there is.
+ */
+export function titleGroup(title: string): string {
+  const parts = title.split('/').map((p) => p.trim()).filter(Boolean);
+  return parts.slice(0, 2).join('/') || title;
+}
+
+/** The directory a story's source sits in — the hierarchy a build-scope variable selects
+ *  on, which is not always the one the reviewer sees. */
+export function pathGroup(importPath: string): string {
+  return importPath.replace(/^\.\//, '').replace(/\/[^/]*$/, '');
 }
 
 /**
@@ -130,6 +190,79 @@ export class Store {
 
   // ── builds ────────────────────────────────────────────────────────────────
 
+  /* ---- named audience scopes ------------------------------------------------ */
+
+  setScope(name: string, groups: string[], by: Principal): Scope {
+    const clean = groups.map((g) => g.trim()).filter(Boolean);
+    if (!clean.length) throw new HttpError(400, 'A scope needs at least one group.');
+    const at = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO scopes (name, groups_json, created_at, created_by) VALUES (?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET groups_json = excluded.groups_json,
+                                         created_at = excluded.created_at,
+                                         created_by = excluded.created_by`,
+      )
+      .run(name.trim(), JSON.stringify(clean), at, by.name);
+    return { name: name.trim(), groups: clean, createdAt: at, createdBy: by.name };
+  }
+
+  listScopes(): Scope[] {
+    return (
+      this.db.prepare('SELECT * FROM scopes ORDER BY name').all() as {
+        name: string;
+        groups_json: string;
+        created_at: string;
+        created_by: string;
+      }[]
+    ).map((r) => ({
+      name: r.name,
+      groups: JSON.parse(r.groups_json) as string[],
+      createdAt: r.created_at,
+      createdBy: r.created_by,
+    }));
+  }
+
+  deleteScope(name: string): boolean {
+    return this.db.prepare('DELETE FROM scopes WHERE name = ?').run(name).changes > 0;
+  }
+
+  /**
+   * Turns what the caller claimed into the set of groups it permits.
+   *
+   * A claim is either a group as the reviewer sees it (`Pages/Clinical`) or the name of a
+   * stored scope (`batch2`). The scope form is the one worth having: nobody thinks in
+   * group names, so a gate that only accepts them gets satisfied by pasting whatever the
+   * refusal printed. `batch2` is a sentence the operator has to mean.
+   */
+  private resolveClaims(claims: string[]): Set<string> {
+    const scopes = new Map(this.listScopes().map((s) => [s.name.toLowerCase(), s.groups]));
+    const out = new Set<string>();
+    for (const raw of claims) {
+      const claim = raw.trim();
+      if (!claim) continue;
+      const scope = scopes.get(claim.toLowerCase());
+      if (scope) for (const g of scope) out.add(g);
+      else out.add(claim);
+    }
+    return out;
+  }
+
+  /** Collapses stories into the blocks a reviewer would name, carrying the directory
+   *  hierarchy alongside so the two can be compared. */
+  private groupsOf(items: { group: string; pathGroup: string }[]): StoryGroup[] {
+    const by = new Map<string, { count: number; paths: Set<string> }>();
+    for (const i of items) {
+      const e = by.get(i.group) ?? { count: 0, paths: new Set<string>() };
+      e.count += 1;
+      e.paths.add(i.pathGroup);
+      by.set(i.group, e);
+    }
+    return [...by.entries()]
+      .map(([group, e]) => ({ group, count: e.count, pathGroups: [...e.paths].sort() }))
+      .sort((a, b) => b.count - a.count);
+  }
+
   /**
    * What an incoming build changes about the reviewable surface, against the live one.
    *
@@ -138,9 +271,19 @@ export class Store {
    * `stories` table instead would be wrong: it accumulates everything ever uploaded, so a
    * story dropped three builds ago would keep counting as present.
    */
-  storyDelta(incoming: { storyId: string; title: string; componentTitle?: string }[]): StoryDelta {
+  storyDelta(
+    incoming: { storyId: string; title: string; componentTitle?: string; importPath: string }[],
+    claims: UploadClaims = {},
+  ): StoryDelta {
     const live = this.latestBuild();
     const incomingIds = new Set(incoming.map((s) => s.storyId));
+
+    const empty = {
+      addedGroups: [],
+      removedGroups: [],
+      unmatchedClaims: [],
+      groupMismatches: [],
+    };
 
     if (!live) {
       // First build. Everything is new by definition, and there is no surface to disturb.
@@ -148,6 +291,7 @@ export class Store {
         liveBuild: null,
         added: [],
         removed: [],
+        ...empty,
         liveCount: 0,
         incomingCount: incoming.length,
         concerns: [],
@@ -156,9 +300,15 @@ export class Store {
 
     const liveRows = this.db
       .prepare(
-        `SELECT story_id, title, component_title, state FROM stories WHERE last_seen_build_id = ?`,
+        `SELECT story_id, title, component_title, import_path, state FROM stories WHERE last_seen_build_id = ?`,
       )
-      .all(live.id) as { story_id: string; title: string; component_title: string; state: StoryState }[];
+      .all(live.id) as {
+      story_id: string;
+      title: string;
+      component_title: string;
+      import_path: string;
+      state: StoryState;
+    }[];
 
     const liveIds = new Set(liveRows.map((r) => r.story_id));
     const added = incoming
@@ -167,6 +317,8 @@ export class Store {
         storyId: s.storyId,
         title: s.title,
         componentTitle: s.componentTitle ?? '',
+        group: titleGroup(s.componentTitle || s.title),
+        pathGroup: pathGroup(s.importPath),
       }));
 
     const threadCounts = this.db.prepare(
@@ -181,47 +333,100 @@ export class Store {
           storyId: r.story_id,
           title: r.title,
           componentTitle: r.component_title,
+          group: titleGroup(r.component_title || r.title),
+          pathGroup: pathGroup(r.import_path),
           state: r.state,
           openThreads: c?.open ?? 0,
           totalThreads: c?.total ?? 0,
         };
       });
 
+    const addedGroups = this.groupsOf(added);
+    const removedGroups = this.groupsOf(removed);
+
+    /*
+     * Where the two hierarchies disagree about the same stories. Never blocks — it is a
+     * property of the host project, not of this upload — but it is exactly the kind of
+     * thing that is invisible until it has already shipped to somebody.
+     */
+    const groupMismatches: string[] = [];
+    const byPath = new Map<string, Set<string>>();
+    for (const a of [...added, ...removed]) {
+      const set = byPath.get(a.pathGroup) ?? new Set<string>();
+      set.add(a.group);
+      byPath.set(a.pathGroup, set);
+    }
+    for (const [path, titles] of byPath) {
+      if (titles.size > 1) {
+        groupMismatches.push(`${path} carries more than one section: ${[...titles].sort().join(', ')}`);
+      }
+    }
+    for (const g of [...addedGroups, ...removedGroups]) {
+      if (g.pathGroups.length > 1) {
+        groupMismatches.push(`${g.group} is spread across ${g.pathGroups.join(', ')}`);
+      }
+    }
+
+    const allowedAdded = this.resolveClaims(claims.allowAdded ?? []);
+    const allowedRemoved = this.resolveClaims(claims.allowRemoved ?? []);
+    const present = new Set([...addedGroups, ...removedGroups].map((g) => g.group));
+    const unmatchedClaims = [...new Set([...allowedAdded, ...allowedRemoved])].filter(
+      (c) => !present.has(c),
+    );
+
     const concerns: string[] = [];
-    const withComments = removed.filter((r) => r.totalThreads > 0);
-    const approvedGone = removed.filter((r) => r.state === 'approved');
-    if (withComments.length) {
-      const openTotal = withComments.reduce((n, r) => n + r.openThreads, 0);
-      concerns.push(
-        `${withComments.length} disappearing ${withComments.length === 1 ? 'story carries' : 'stories carry'} ` +
-          `${openTotal} open comment${openTotal === 1 ? '' : 's'} — the comments survive in the database and ` +
-          `become unreachable on the surface.`,
+
+    // ---- removals: always material, whatever their size ----
+    const unclaimedRemoved = removedGroups.filter((g) => !allowedRemoved.has(g.group));
+    if (unclaimedRemoved.length) {
+      const gone = unclaimedRemoved.flatMap((g) =>
+        removed.filter((r) => r.group === g.group),
       );
+      const withComments = gone.filter((r) => r.totalThreads > 0);
+      const approvedGone = gone.filter((r) => r.state === 'approved');
+      if (withComments.length) {
+        const openTotal = withComments.reduce((n, r) => n + r.openThreads, 0);
+        concerns.push(
+          `${withComments.length} disappearing ${withComments.length === 1 ? 'story carries' : 'stories carry'} ` +
+            `${openTotal} open comment${openTotal === 1 ? '' : 's'} — the comments survive in the database and ` +
+            `become unreachable on the surface.`,
+        );
+      }
+      if (approvedGone.length) {
+        concerns.push(
+          `${approvedGone.length} approved ${approvedGone.length === 1 ? 'story is' : 'stories are'} dropped, ` +
+            `which removes a sign-off from the surface it was granted on.`,
+        );
+      }
+      if (!withComments.length && !approvedGone.length) {
+        concerns.push(
+          `${gone.length} ${gone.length === 1 ? 'story disappears' : 'stories disappear'} from the ` +
+            `reviewable surface, in ${unclaimedRemoved.map((g) => g.group).join(', ')}.`,
+        );
+      }
     }
-    if (approvedGone.length) {
-      concerns.push(
-        `${approvedGone.length} approved ${approvedGone.length === 1 ? 'story is' : 'stories are'} dropped, ` +
-          `which removes a sign-off from the surface it was granted on.`,
-      );
-    }
-    if (removed.length && !withComments.length && !approvedGone.length) {
-      concerns.push(
-        `${removed.length} ${removed.length === 1 ? 'story disappears' : 'stories disappear'} from the ` +
-          `reviewable surface.`,
-      );
-    }
+
+    // ---- additions: gated only once they stop looking like iteration ----
     const growthLimit = Math.max(GROWTH_FLOOR, Math.ceil(liveRows.length * GROWTH_FRACTION));
     if (added.length > growthLimit) {
-      concerns.push(
-        `${added.length} stories are added to a surface of ${liveRows.length} — past the ${growthLimit} ` +
-          `that passes without asking. Check the build is scoped to what this audience has been shown.`,
-      );
+      const unclaimed = addedGroups.filter((g) => !allowedAdded.has(g.group));
+      if (unclaimed.length) {
+        concerns.push(
+          `${added.length} stories are added to a surface of ${liveRows.length} — past the ${growthLimit} ` +
+            `that passes without asking. Unclaimed: ` +
+            `${unclaimed.map((g) => `${g.group} (${g.count})`).join(', ')}.`,
+        );
+      }
     }
 
     return {
       liveBuild: { id: live.id, label: live.label },
       added,
       removed,
+      addedGroups,
+      removedGroups,
+      unmatchedClaims,
+      groupMismatches,
       liveCount: liveRows.length,
       incomingCount: incoming.length,
       concerns,
@@ -230,7 +435,7 @@ export class Store {
 
   ingestBuildZip(
     zipBytes: Uint8Array,
-    meta: { label: string; gitSha?: string; allowStoryChanges?: boolean },
+    meta: { label: string; gitSha?: string } & UploadClaims,
     by: Principal,
   ): BuildUploadResult {
     const entries = readZip(zipBytes);
@@ -257,7 +462,7 @@ export class Store {
      * throw happens before `writeEntries`, not inside the transaction that would roll the
      * row back but not the files.
      */
-    const delta = this.storyDelta(stories);
+    const delta = this.storyDelta(stories, meta);
     if (delta.concerns.length && !meta.allowStoryChanges) {
       throw new HttpError(
         409,

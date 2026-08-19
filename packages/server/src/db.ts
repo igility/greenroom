@@ -437,6 +437,33 @@ export const MIGRATIONS: Migration[] = [
   `
   ALTER TABLE tokens ADD COLUMN reviewer_id TEXT REFERENCES reviewers(id);
   `,
+
+  /*
+   * v12 — named audience scopes, so an upload can be claimed in the project's own words.
+   *
+   * The upload gate refuses a build that changes the reviewable surface, and the override
+   * has to be a CLAIM rather than a confirmation: a bare yes is answered yes every time,
+   * which is how a gate decays into a keystroke. A claim names the story groups being
+   * added, and a claim that does not match the artifact fails.
+   *
+   * Groups alone are checkable but not idiomatic — nobody thinks in "Pages/Clinical,
+   * Pages/Commerce", they think "batch 2". This table holds that mapping, so the word
+   * the project already uses becomes the thing that gets verified. Shipping staff-admin
+   * while claiming `batch2` then fails on the claim, which is exactly the mistake worth
+   * catching, and no amount of care in the moment substitutes for it.
+   *
+   * Deliberately NOT a copy of the host project's build-scope config. That decides what
+   * gets BUILT; this records what an audience has been SHOWN. They usually agree, and
+   * the times they do not are the incidents.
+   */
+  `
+  CREATE TABLE scopes (
+    name TEXT PRIMARY KEY,
+    groups_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+  );
+  `,
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the
