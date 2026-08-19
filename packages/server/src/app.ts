@@ -16,7 +16,11 @@ export function createApp(store: Store, config: Config, mailer: Mailer = createM
   app.onError((err, c) => {
     if (err instanceof HttpError) {
       return c.json(
-        { error: err.message, ...(err.reason ? { reason: err.reason } : {}) },
+        {
+          error: err.message,
+          ...(err.reason ? { reason: err.reason } : {}),
+          ...(err.details ? { details: err.details } : {}),
+        },
         err.status as 400,
       );
     }

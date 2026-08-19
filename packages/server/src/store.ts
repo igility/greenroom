@@ -34,7 +34,57 @@ export interface BuildUploadResult {
   build: Build;
   created: boolean;
   newStories: number;
+  /** What this upload changes about the reviewable surface. Null on a deduped re-upload,
+   *  and on the very first build, where there is nothing to compare against. */
+  delta: StoryDelta | null;
 }
+
+/** A story the incoming build drops, and what review history goes quiet with it. */
+export interface RemovedStory {
+  storyId: string;
+  title: string;
+  componentTitle: string;
+  /** Where the story had got to. Losing an `approved` one erases a sign-off. */
+  state: StoryState;
+  /** Threads still awaiting an answer. These are the reason removals are gated: the
+   *  comment survives in the database and becomes unreachable on the surface. */
+  openThreads: number;
+  totalThreads: number;
+}
+
+/**
+ * What an upload does to the reviewable surface, measured against the build that is
+ * currently live — the one a reviewer's link lands on.
+ *
+ * Greenroom knows both sets, so it can answer "what is about to change for the client"
+ * without being told anything about the project's own staging conventions. That is the
+ * whole point: the caller cannot be relied upon to know, because the caller is usually
+ * an agent running a build command it did not write.
+ */
+export interface StoryDelta {
+  liveBuild: { id: string; label: string } | null;
+  added: { storyId: string; title: string; componentTitle: string }[];
+  removed: RemovedStory[];
+  liveCount: number;
+  incomingCount: number;
+  /** Why this delta is being gated, empty when it is routine. Each entry is shown to
+   *  whoever ran the upload, so it reads as a sentence rather than a code. */
+  concerns: string[];
+}
+
+/**
+ * How much growth passes without a word.
+ *
+ * A design system under active work adds stories on most uploads, so gating every
+ * addition would train whoever deploys to pass the override reflexively — and an
+ * override that is always passed is not a gate. The threshold exists to keep the
+ * interruption rare enough that it still means something when it fires.
+ *
+ * Proportional rather than absolute so it travels to projects of other sizes, with a
+ * floor so a small surface is not gated by its third story.
+ */
+const GROWTH_FRACTION = 0.1;
+const GROWTH_FLOOR = 10;
 
 /** How much of a link token a listing shows. Enough to identify a row for revocation,
  *  far too little to reach the review with. */
@@ -80,7 +130,109 @@ export class Store {
 
   // ── builds ────────────────────────────────────────────────────────────────
 
-  ingestBuildZip(zipBytes: Uint8Array, meta: { label: string; gitSha?: string }, by: Principal): BuildUploadResult {
+  /**
+   * What an incoming build changes about the reviewable surface, against the live one.
+   *
+   * "Live" is the build a reviewer's link lands on — `latestBuild()` — and the stories in
+   * it are those whose `last_seen_build_id` points at it. Comparing against the whole
+   * `stories` table instead would be wrong: it accumulates everything ever uploaded, so a
+   * story dropped three builds ago would keep counting as present.
+   */
+  storyDelta(incoming: { storyId: string; title: string; componentTitle?: string }[]): StoryDelta {
+    const live = this.latestBuild();
+    const incomingIds = new Set(incoming.map((s) => s.storyId));
+
+    if (!live) {
+      // First build. Everything is new by definition, and there is no surface to disturb.
+      return {
+        liveBuild: null,
+        added: [],
+        removed: [],
+        liveCount: 0,
+        incomingCount: incoming.length,
+        concerns: [],
+      };
+    }
+
+    const liveRows = this.db
+      .prepare(
+        `SELECT story_id, title, component_title, state FROM stories WHERE last_seen_build_id = ?`,
+      )
+      .all(live.id) as { story_id: string; title: string; component_title: string; state: StoryState }[];
+
+    const liveIds = new Set(liveRows.map((r) => r.story_id));
+    const added = incoming
+      .filter((s) => !liveIds.has(s.storyId))
+      .map((s) => ({
+        storyId: s.storyId,
+        title: s.title,
+        componentTitle: s.componentTitle ?? '',
+      }));
+
+    const threadCounts = this.db.prepare(
+      `SELECT COUNT(*) AS total, SUM(CASE WHEN state = 'open' THEN 1 ELSE 0 END) AS open
+         FROM threads WHERE story_id = ?`,
+    );
+    const removed: RemovedStory[] = liveRows
+      .filter((r) => !incomingIds.has(r.story_id))
+      .map((r) => {
+        const c = threadCounts.get(r.story_id) as { total: number; open: number | null };
+        return {
+          storyId: r.story_id,
+          title: r.title,
+          componentTitle: r.component_title,
+          state: r.state,
+          openThreads: c?.open ?? 0,
+          totalThreads: c?.total ?? 0,
+        };
+      });
+
+    const concerns: string[] = [];
+    const withComments = removed.filter((r) => r.totalThreads > 0);
+    const approvedGone = removed.filter((r) => r.state === 'approved');
+    if (withComments.length) {
+      const openTotal = withComments.reduce((n, r) => n + r.openThreads, 0);
+      concerns.push(
+        `${withComments.length} disappearing ${withComments.length === 1 ? 'story carries' : 'stories carry'} ` +
+          `${openTotal} open comment${openTotal === 1 ? '' : 's'} — the comments survive in the database and ` +
+          `become unreachable on the surface.`,
+      );
+    }
+    if (approvedGone.length) {
+      concerns.push(
+        `${approvedGone.length} approved ${approvedGone.length === 1 ? 'story is' : 'stories are'} dropped, ` +
+          `which removes a sign-off from the surface it was granted on.`,
+      );
+    }
+    if (removed.length && !withComments.length && !approvedGone.length) {
+      concerns.push(
+        `${removed.length} ${removed.length === 1 ? 'story disappears' : 'stories disappear'} from the ` +
+          `reviewable surface.`,
+      );
+    }
+    const growthLimit = Math.max(GROWTH_FLOOR, Math.ceil(liveRows.length * GROWTH_FRACTION));
+    if (added.length > growthLimit) {
+      concerns.push(
+        `${added.length} stories are added to a surface of ${liveRows.length} — past the ${growthLimit} ` +
+          `that passes without asking. Check the build is scoped to what this audience has been shown.`,
+      );
+    }
+
+    return {
+      liveBuild: { id: live.id, label: live.label },
+      added,
+      removed,
+      liveCount: liveRows.length,
+      incomingCount: incoming.length,
+      concerns,
+    };
+  }
+
+  ingestBuildZip(
+    zipBytes: Uint8Array,
+    meta: { label: string; gitSha?: string; allowStoryChanges?: boolean },
+    by: Principal,
+  ): BuildUploadResult {
     const entries = readZip(zipBytes);
     const hash = manifestHash(entries);
 
@@ -88,10 +240,33 @@ export class Store {
       .prepare('SELECT * FROM builds WHERE manifest_hash = ?')
       .get(hash) as BuildRow | undefined;
     if (existing) {
-      return { build: rowToBuild(existing), created: false, newStories: 0 };
+      return { build: rowToBuild(existing), created: false, newStories: 0, delta: null };
     }
 
     const stories = parseStoryIndex(entries);
+
+    /*
+     * THE GATE, AND IT IS BEFORE ANY WRITE ON PURPOSE.
+     *
+     * Computed here rather than in the CLI because the CLI is not the only caller — the
+     * MCP server and any agent with an admin key post to this route directly, and a check
+     * that lives in one client protects only that client. The same reasoning retired the
+     * addon's trust-the-client build id.
+     *
+     * A refused upload must leave nothing behind: no extracted tree, no build row. So the
+     * throw happens before `writeEntries`, not inside the transaction that would roll the
+     * row back but not the files.
+     */
+    const delta = this.storyDelta(stories);
+    if (delta.concerns.length && !meta.allowStoryChanges) {
+      throw new HttpError(
+        409,
+        `Upload would change the reviewable surface. ${delta.concerns.join(' ')}`,
+        'story-set-changed',
+        delta,
+      );
+    }
+
     const buildId = id();
     // Recorded relative to the data directory, resolved against it on read. An absolute
     // path survives a backup and restore only while the data directory keeps its old
@@ -171,7 +346,7 @@ export class Store {
     })();
 
     const build = this.getBuild(buildId);
-    return { build, created: true, newStories };
+    return { build, created: true, newStories, delta };
   }
 
   /**

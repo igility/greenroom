@@ -102,7 +102,9 @@ describe('sheet classification', () => {
       ),
       'iframe.html': enc('<html>b</html>'),
     });
-    store.ingestBuildZip(untagged, { label: 'v2' }, admin);
+    // This build really does drop the other two stories, so the upload gate is right to
+    // stop it. Acknowledged here because the subject under test is reclassification.
+    store.ingestBuildZip(untagged, { label: 'v2', allowStoryChanges: true }, admin);
     expect(store.getStory(SHEET).kind).toBe('story');
   });
 });

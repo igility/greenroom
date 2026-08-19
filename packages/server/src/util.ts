@@ -68,6 +68,10 @@ export class HttpError extends Error {
     public status: number,
     message: string,
     public reason?: string,
+    /** Structured payload for errors a caller is expected to ACT on rather than merely
+     *  report — the upload gate returns the story delta here so the operator can read
+     *  what changed without a second round trip. */
+    public details?: unknown,
   ) {
     super(message);
   }

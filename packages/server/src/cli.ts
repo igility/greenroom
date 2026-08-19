@@ -4,8 +4,44 @@ import { serve } from '@hono/node-server';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { openDb } from './db.js';
+import type { StoryDelta } from './store.js';
 import { Store } from './store.js';
 import { zipDir } from './zip.js';
+
+/** How many names to print before summarising the rest. Enough to recognise the shape of
+ *  what moved; short enough that a 245-story delta is still readable in a terminal. */
+const NAMES_SHOWN = 12;
+
+function printDelta(d: StoryDelta, out: (s: string) => void = console.error) {
+  const live = d.liveBuild ? `"${d.liveBuild.label}"` : 'nothing (first build)';
+  out(`  live: ${live} — ${d.liveCount} stories`);
+  out(`  incoming: ${d.incomingCount} stories`);
+  out(`  ${d.added.length} added, ${d.removed.length} removed`);
+
+  const list = (label: string, names: string[]) => {
+    if (!names.length) return;
+    out(`\n  ${label}:`);
+    for (const n of names.slice(0, NAMES_SHOWN)) out(`    ${n}`);
+    if (names.length > NAMES_SHOWN) out(`    … and ${names.length - NAMES_SHOWN} more`);
+  };
+
+  list(
+    'removed',
+    d.removed.map((r) => {
+      const marks = [
+        r.openThreads ? `${r.openThreads} open comment${r.openThreads === 1 ? '' : 's'}` : '',
+        r.state === 'approved' ? 'approved' : '',
+      ].filter(Boolean);
+      return `${r.title}${marks.length ? `  [${marks.join(', ')}]` : ''}`;
+    }),
+  );
+  list('added', d.added.map((a) => a.title));
+
+  if (d.concerns.length) {
+    out('');
+    for (const c of d.concerns) out(`  ⚠ ${c}`);
+  }
+}
 
 const command = process.argv[2] ?? 'serve';
 
@@ -50,11 +86,14 @@ if (command === 'serve') {
       token: { type: 'string', default: process.env.GREENROOM_TOKEN ?? '' },
       label: { type: 'string' },
       'git-sha': { type: 'string' },
+      'allow-story-changes': { type: 'boolean', default: false },
     },
   });
   const dir = positionals[0];
   if (!dir) {
-    console.error('Usage: greenroom upload <storybook-static-dir> [--url URL] [--token TOKEN] [--label LABEL] [--git-sha SHA]');
+    console.error(
+      'Usage: greenroom upload <storybook-static-dir> [--url URL] [--token TOKEN] [--label LABEL] [--git-sha SHA] [--allow-story-changes]',
+    );
     process.exit(1);
   }
   if (!values.token) {
@@ -65,6 +104,7 @@ if (command === 'serve') {
   const params = new URLSearchParams();
   if (values.label) params.set('label', values.label);
   if (values['git-sha']) params.set('gitSha', values['git-sha']);
+  if (values['allow-story-changes']) params.set('allowStoryChanges', '1');
   const url = `${values.url.replace(/\/$/, '')}/api/builds?${params}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -73,20 +113,59 @@ if (command === 'serve') {
   });
   const json = (await res.json()) as {
     error?: string;
+    reason?: string;
+    details?: StoryDelta;
     created?: boolean;
     newStories?: number;
+    delta?: StoryDelta | null;
     build?: { id: string; label: string; storyCount: number };
   };
+
+  if (res.status === 409 && json.reason === 'story-set-changed' && json.details) {
+    // Refused, and nothing was written. Print what would have changed, because the
+    // decision to override is only informed if the operator can see the delta here
+    // rather than having to go and diff two index.json files.
+    console.error('\nRefused — this upload would change what the client can see.\n');
+    printDelta(json.details);
+    console.error('\nRe-run with --allow-story-changes if that is intended.\n');
+    process.exit(1);
+  }
   if (!res.ok) {
     console.error(`Upload failed (${res.status}): ${json.error ?? 'unknown error'}`);
     process.exit(1);
   }
   if (!json.created) {
     console.log(`Identical build already uploaded — ${json.build?.id} ("${json.build?.label}"). Nothing changed.`);
+    /*
+     * "Nothing changed" is true of the database and can be badly false of the intent.
+     *
+     * An upload is deduped by content hash, so re-uploading an EARLIER artifact returns
+     * that earlier build and does not make it live — the reviewer keeps landing on
+     * whatever came after it. Someone rolling a surface back by re-uploading the good
+     * artifact would read this line, see exit 0, and believe it worked.
+     */
+    const latestRes = await fetch(`${values.url.replace(/\/$/, '')}/api/builds/latest`, {
+      headers: { authorization: `Bearer ${values.token}` },
+    });
+    if (latestRes.ok) {
+      const { build: latest } = (await latestRes.json()) as {
+        build?: { id: string; label: string } | null;
+      };
+      if (latest && latest.id !== json.build?.id) {
+        console.log(
+          `\n  ⚠ This did NOT change what reviewers see. They land on "${latest.label}", which came later.\n` +
+            `    Re-uploading an earlier artifact cannot roll the surface back — build a new one.`,
+        );
+      }
+    }
   } else {
     console.log(
       `Build ${json.build?.id} ("${json.build?.label}") — ${json.build?.storyCount} stories, ${json.newStories} new.`,
     );
+    // Printed on EVERY successful upload, not only on a refusal. What changed for the
+    // reviewer is the thing worth knowing, and a report that appears only when something
+    // is wrong teaches nobody what normal looks like.
+    if (json.delta) printDelta(json.delta, console.log);
   }
 } else if (command === 'link' || command === 'token' || command === 'reviewer') {
   /*

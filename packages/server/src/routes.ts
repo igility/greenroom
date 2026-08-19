@@ -96,7 +96,15 @@ export function registerRoutes(
     if (bytes.byteLength > MAX_UPLOAD_BYTES) {
       throw new HttpError(413, `Upload exceeds the ${MAX_UPLOAD_BYTES}-byte limit.`);
     }
-    const result = store.ingestBuildZip(bytes, { label, gitSha }, principalOf(c));
+    // Opt-in, and named for what it permits rather than for silencing the check.
+    const allowStoryChanges = ['1', 'true', 'yes'].includes(
+      (c.req.query('allowStoryChanges') ?? '').toLowerCase(),
+    );
+    const result = store.ingestBuildZip(
+      bytes,
+      { label, gitSha, allowStoryChanges },
+      principalOf(c),
+    );
     return c.json(result, result.created ? 201 : 200);
   });
 
