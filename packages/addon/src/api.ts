@@ -42,6 +42,18 @@ export interface Conn {
   token?: string;
 }
 
+/**
+ * Reads the build id out of a sidecar path. Builds are served under `/builds/<id>/`, so
+ * the id of the render on screen is already in the URL and needs no round trip.
+ *
+ * Returns null for anything else — notably local Storybook at `localhost:6006`, which has
+ * no build in its path because nothing has been uploaded.
+ */
+export function buildIdFromPath(pathname: string): string | null {
+  const m = /^\/builds\/([^/]+)\//.exec(pathname);
+  return m ? m[1]! : null;
+}
+
 export class Sidecar {
   constructor(private conn: Conn) {}
 
@@ -140,6 +152,29 @@ export class Sidecar {
   }
   latestBuild() {
     return this.req<{ build: Build | null }>('GET', '/api/builds/latest');
+  }
+
+  /**
+   * The build the reviewer is actually looking at — which is not necessarily the newest
+   * one on the server.
+   *
+   * A reviewer link pins a build id into the URL on purpose, so a tab left open on an
+   * older build is the designed behaviour rather than an edge case. Asking the server for
+   * `latest` at submit time therefore stamps whatever was uploaded most recently, while
+   * the pin coordinates and the screenshot both come from the render still on screen.
+   * Nothing errors and the thread looks normal, which is what makes it worth a method of
+   * its own rather than a call site each.
+   *
+   * 🔴 The path wins outright when it carries an id. Falling back to `latest` on a failed
+   * lookup would reintroduce exactly the silent mis-stamp this exists to prevent; the
+   * fallback is only for the no-id case, which is local dev on `localhost:6006`.
+   */
+  async currentBuildId(): Promise<string | null> {
+    const fromPath = buildIdFromPath(
+      typeof window === 'undefined' ? '' : window.location.pathname,
+    );
+    if (fromPath) return fromPath;
+    return (await this.latestBuild()).build?.id ?? null;
   }
   setStatus(storyId: string, to: StoryState, buildId?: string, note?: string) {
     return this.req<{ story: Story }>('POST', `/api/stories/${encodeURIComponent(storyId)}/status`, {

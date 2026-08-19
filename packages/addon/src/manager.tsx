@@ -776,20 +776,25 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
 
   const act = async (to: StoryState) => {
     try {
-      const build = (await client.latestBuild()).build;
+      // The build ON SCREEN, not the newest on the server. An approval carries the build
+      // it was granted against, and stamping that with something the approver never saw
+      // is a record asserting they looked at a render they did not — which is worse than
+      // a mis-filed comment, because `changedSinceApproval` and the re-confirm baseline
+      // both hang off this id.
+      const buildId = await client.currentBuildId();
       // Whether this was a re-confirmation has to be read BEFORE the call, because the
       // call is what clears the flag.
       const wasReconfirm = to === 'approved' && story?.changedSinceApproval === true;
-      const r = await client.setStatus(subjectId, to, to === 'approved' ? (build?.id ?? undefined) : undefined);
+      const r = await client.setStatus(subjectId, to, to === 'approved' ? (buildId ?? undefined) : undefined);
       setStory(r.story);
       refresh();
       // Only ever offered off the back of a review that just happened. Showing it on
       // arrival would be a bulk-approve button, which is a different and much worse
       // thing: this asks "you looked at that one — do these too?", and the answer is
       // only meaningful because they did look.
-      if (wasReconfirm && build) {
+      if (wasReconfirm && buildId) {
         const others = (await client.alsoChanged(subjectId)).stories;
-        setBatch(others.length ? { others, buildId: build.id } : null);
+        setBatch(others.length ? { others, buildId } : null);
       }
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'Action failed.');
@@ -823,8 +828,11 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
   const submitPin = async () => {
     if (!pending || !comment.trim()) return;
     try {
-      const build = (await client.latestBuild()).build;
-      if (!build) throw new Error('No builds uploaded yet — run `greenroom upload` first.');
+      // The build being rendered, not the newest uploaded — otherwise a comment left from
+      // a tab opened before an upload records the new build while its pin and screenshot
+      // both come from the old render.
+      const buildId = await client.currentBuildId();
+      if (!buildId) throw new Error('No builds uploaded yet — run `greenroom upload` first.');
       const screenshotAttachmentId = pending.screenshotDataUrl
         ? await client.uploadScreenshot(pending.screenshotDataUrl)
         : undefined;
@@ -835,7 +843,7 @@ export const Panel: React.FC<{ active: boolean }> = ({ active }) => {
         // comment left on a contact sheet against the sheet — a page containing no
         // code — instead of the component that needs the fix.
         regionStoryId: pending.regionStoryId,
-        buildId: build.id,
+        buildId,
         body: comment.trim(),
         // The width comes from the preview, which knows how wide it is; the NAME comes
         // from the manager, which is the only side that knows what the reviewer picked.

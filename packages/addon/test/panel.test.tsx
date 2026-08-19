@@ -96,6 +96,10 @@ const sidecar = {
   allFeedback: vi.fn(),
   feedbackForStory: vi.fn(),
   latestBuild: vi.fn().mockResolvedValue({ build: BUILD }),
+  // What the panel actually calls. Resolves the build ON SCREEN from the URL, falling back
+  // to latestBuild() only when the path carries no build id — which is this stub's case,
+  // and local dev's.
+  currentBuildId: vi.fn().mockResolvedValue(BUILD.id),
   setStatus: vi.fn(),
   alsoChanged: vi.fn().mockResolvedValue({ stories: [] }),
   batchApprove: vi.fn().mockResolvedValue({ approved: [], skipped: [] }),
