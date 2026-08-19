@@ -74,7 +74,7 @@ test.afterAll(() => {
 test('dev panel: connect → pin comment → thread → approve', async ({ page }) => {
   await page.goto(`${STATIC}/?path=/story/components-button--primary`);
 
-  await page.getByRole('tab', { name: 'Review' }).click();
+  await page.getByRole('tab', { name: 'Greenroom' }).click();
 
   await page.getByLabel('Sidecar URL').fill(SIDECAR);
   await page.getByLabel('API token').fill(ADMIN);

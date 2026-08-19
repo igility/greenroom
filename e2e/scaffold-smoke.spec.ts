@@ -43,7 +43,7 @@ test('demo storybook renders a story and mounts the Greenroom Review panel', asy
   const preview = page.frameLocator('#storybook-preview-iframe');
   await expect(preview.getByRole('button', { name: 'Save changes' })).toBeVisible();
 
-  await page.getByRole('tab', { name: 'Review' }).click();
+  await page.getByRole('tab', { name: 'Greenroom' }).click();
   // With no sidecar configured, the panel shows its connect form — proof the
   // addon registered and mounted its React panel in a real built Storybook.
   await expect(page.getByText('Connect this panel to a Greenroom sidecar')).toBeVisible();
