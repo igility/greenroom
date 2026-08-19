@@ -56,6 +56,17 @@ function printDelta(d: StoryDelta, out: (s: string) => void = console.error) {
     if (costly.length > GROUPS_SHOWN) out(`    … and ${costly.length - GROUPS_SHOWN} more`);
   }
 
+  // Named individually and first among the losses, because this is the failure the
+  // story-level view is structurally unable to see: the story survives, the item inside
+  // it does not, and a client comment stops resolving with nobody told.
+  if (d.droppedAnchors.length) {
+    out('\n  anchored items deleted while their story stays:');
+    for (const a of d.droppedAnchors) {
+      out(`    ${a.anchor}  [${a.openThreads} open]  on ${a.storyId}`);
+      if (a.sample) out(`      "${a.sample}"`);
+    }
+  }
+
   if (d.groupMismatches.length) {
     out('\n  the two hierarchies disagree here:');
     for (const m of d.groupMismatches) out(`    ${m}`);

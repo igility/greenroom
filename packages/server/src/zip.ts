@@ -1,7 +1,12 @@
 import { unzipSync, zipSync } from 'fflate';
 import fs from 'node:fs';
 import path from 'node:path';
-import { SHEET_TAG, type StoryKind } from '@igility/greenroom-shared';
+import {
+  ANCHOR_MANIFEST_FILE,
+  SHEET_TAG,
+  type AnchorManifest,
+  type StoryKind,
+} from '@igility/greenroom-shared';
 import { sha256Hex, HttpError } from './util.js';
 
 export type ZipEntries = Record<string, Uint8Array>;
@@ -135,4 +140,33 @@ export function parseStoryIndex(entries: ZipEntries): IndexedStory[] {
     });
   }
   return stories;
+}
+
+/**
+ * The build's own list of the anchors it contains, when it ships one.
+ *
+ * Anchors exist only once a story has rendered, so an archive cannot be interrogated for
+ * them without executing it. A host that writes this file answers the question
+ * statically, and that is what lets an upload be refused for dropping an anchor a client
+ * has commented on.
+ *
+ * Absent is a normal answer, not an error: the check simply does not run. Malformed is
+ * ALSO treated as absent rather than fatal — a broken manifest must not be able to block
+ * a deploy, because the failure it would cause is worse than the check it disables, and
+ * a host is free to emit nothing at all.
+ */
+export function parseAnchorManifest(entries: ZipEntries): AnchorManifest | null {
+  const raw = entries[ANCHOR_MANIFEST_FILE];
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(raw)) as AnchorManifest;
+    if (!parsed || typeof parsed.anchors !== 'object' || parsed.anchors === null) return null;
+    const anchors: Record<string, string[]> = {};
+    for (const [storyId, list] of Object.entries(parsed.anchors)) {
+      if (Array.isArray(list)) anchors[storyId] = list.map(String).filter(Boolean);
+    }
+    return { anchors };
+  } catch {
+    return null;
+  }
 }

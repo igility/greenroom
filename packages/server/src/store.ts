@@ -19,6 +19,7 @@ import {
   type StatusEvent,
   type Story,
   type StoryKind,
+  type AnchorManifest,
   type StoryState,
   type Thread,
   type ThreadState,
@@ -26,7 +27,14 @@ import {
 } from '@igility/greenroom-shared';
 import type { DB } from './db.js';
 import { id, nowIso, secret, sha256Hex, HttpError } from './util.js';
-import { manifestHash, parseStoryIndex, readZip, writeEntries, type ZipEntries } from './zip.js';
+import {
+  manifestHash,
+  parseAnchorManifest,
+  parseStoryIndex,
+  readZip,
+  writeEntries,
+  type ZipEntries,
+} from './zip.js';
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -52,6 +60,24 @@ export interface RemovedStory {
    *  comment survives in the database and becomes unreachable on the surface. */
   openThreads: number;
   totalThreads: number;
+}
+
+/**
+ * An anchored item that a build drops while the story around it survives.
+ *
+ * The story-level check cannot see this. 35 decision cards live in three stories on the
+ * project this was built for, so deleting one changes no story id, produces no delta, and
+ * silently strands every comment pinned to it. This is the element-level equivalent.
+ */
+export interface DroppedAnchor {
+  anchor: string;
+  /** The surface the anchor lives on — where the pin was taken. */
+  storyId: string;
+  openThreads: number;
+  totalThreads: number;
+  /** First line of the oldest comment, so the report says what is about to go quiet
+   *  rather than only how much of it there is. */
+  sample: string;
 }
 
 /**
@@ -86,6 +112,9 @@ export interface StoryDelta {
   removedGroups: StoryGroup[];
   liveCount: number;
   incomingCount: number;
+  /** Anchored items that vanish while their story survives. Empty when the build ships
+   *  no anchor manifest, which only means the check did not run. */
+  droppedAnchors: DroppedAnchor[];
   /** Groups the caller claimed that are not in this build at all. Not fatal — claiming a
    *  named scope whose other groups are already live is ordinary — but printed, because
    *  it also describes someone who thinks they built something they did not. */
@@ -124,6 +153,20 @@ export interface Scope {
 export function titleGroup(title: string): string {
   const parts = title.split('/').map((p) => p.trim()).filter(Boolean);
   return parts.slice(0, 2).join('/') || title;
+}
+
+/**
+ * The anchor value a pin was attached to, when it has one.
+ *
+ * Selectors are stored as `finder` produced them, so an anchored pin reads
+ * `[data-greenroom-anchor="decision-radius"]` — possibly with more path around it. A pin
+ * with no anchor returns null and is simply not checkable this way; it is positional, and
+ * fragile to changes this cannot see.
+ */
+export function anchorInSelector(selector: string | null): string | null {
+  if (!selector) return null;
+  const m = /\[data-greenroom-anchor="([^"]+)"\]/.exec(selector);
+  return m ? m[1]! : null;
 }
 
 /** The directory a story's source sits in — the hierarchy a build-scope variable selects
@@ -274,6 +317,7 @@ export class Store {
   storyDelta(
     incoming: { storyId: string; title: string; componentTitle?: string; importPath: string }[],
     claims: UploadClaims = {},
+    manifest: AnchorManifest | null = null,
   ): StoryDelta {
     const live = this.latestBuild();
     const incomingIds = new Set(incoming.map((s) => s.storyId));
@@ -281,6 +325,7 @@ export class Store {
     const empty = {
       addedGroups: [],
       removedGroups: [],
+      droppedAnchors: [],
       unmatchedClaims: [],
       groupMismatches: [],
     };
@@ -367,9 +412,68 @@ export class Store {
       }
     }
 
+    /*
+     * Anchored items that go while their story stays.
+     *
+     * Only checked for stories the incoming build still HAS: a story that disappeared is
+     * already reported at story level, and re-reporting each of its anchors would bury
+     * that under noise. Only threads that are still open matter — a resolved one going
+     * quiet is the normal end of its life.
+     */
+    const droppedAnchors: DroppedAnchor[] = [];
+    if (manifest) {
+      const anchored = this.db
+        .prepare(
+          `SELECT t.id, t.selector, t.state, COALESCE(t.seen_on_story_id, t.story_id) AS surface,
+                  t.created_at,
+                  (SELECT body FROM messages WHERE thread_id = t.id ORDER BY created_at LIMIT 1) AS first_message
+             FROM threads t
+            WHERE t.selector IS NOT NULL`,
+        )
+        .all() as {
+        id: string;
+        selector: string;
+        state: ThreadState;
+        surface: string;
+        created_at: string;
+        first_message: string | null;
+      }[];
+
+      const byAnchor = new Map<string, typeof anchored>();
+      for (const t of anchored) {
+        const anchor = anchorInSelector(t.selector);
+        // Only surfaces this build still ships. A vanished story is story-level news.
+        if (!anchor || !incomingIds.has(t.surface)) continue;
+        const key = `${t.surface}\u0000${anchor}`;
+        byAnchor.set(key, [...(byAnchor.get(key) ?? []), t]);
+      }
+
+      for (const [key, threads] of byAnchor) {
+        const [surface, anchor] = key.split('\u0000') as [string, string];
+        const present = manifest.anchors[surface];
+        // A story absent from the manifest declares nothing, which is not the same as
+        // declaring emptiness — treating it as empty would report every anchor on every
+        // story a host only partly instruments.
+        if (!present || present.includes(anchor)) continue;
+        const open = threads.filter((t) => t.state === 'open');
+        if (!open.length) continue;
+        const oldest = [...open].sort((a, b) => a.created_at.localeCompare(b.created_at))[0]!;
+        droppedAnchors.push({
+          anchor,
+          storyId: surface,
+          openThreads: open.length,
+          totalThreads: threads.length,
+          sample: (oldest.first_message ?? '').split('\n')[0]!.slice(0, 100),
+        });
+      }
+    }
+
     const allowedAdded = this.resolveClaims(claims.allowAdded ?? []);
     const allowedRemoved = this.resolveClaims(claims.allowRemoved ?? []);
-    const present = new Set([...addedGroups, ...removedGroups].map((g) => g.group));
+    const present = new Set([
+      ...[...addedGroups, ...removedGroups].map((g) => g.group),
+      ...droppedAnchors.map((a) => a.anchor),
+    ]);
     const unmatchedClaims = [...new Set([...allowedAdded, ...allowedRemoved])].filter(
       (c) => !present.has(c),
     );
@@ -406,6 +510,18 @@ export class Store {
       }
     }
 
+    // ---- anchored items dropped out from under a live comment ----
+    const unclaimedAnchors = droppedAnchors.filter((a) => !allowedRemoved.has(a.anchor));
+    if (unclaimedAnchors.length) {
+      const total = unclaimedAnchors.reduce((n, a) => n + a.openThreads, 0);
+      concerns.push(
+        `${unclaimedAnchors.length} anchored ${unclaimedAnchors.length === 1 ? 'item is' : 'items are'} ` +
+          `deleted while ${unclaimedAnchors.length === 1 ? 'its' : 'their'} story stays, stranding ` +
+          `${total} open client comment${total === 1 ? '' : 's'}: ` +
+          `${unclaimedAnchors.map((a) => a.anchor).join(', ')}.`,
+      );
+    }
+
     // ---- additions: gated only once they stop looking like iteration ----
     const growthLimit = Math.max(GROWTH_FLOOR, Math.ceil(liveRows.length * GROWTH_FRACTION));
     if (added.length > growthLimit) {
@@ -425,6 +541,7 @@ export class Store {
       removed,
       addedGroups,
       removedGroups,
+      droppedAnchors,
       unmatchedClaims,
       groupMismatches,
       liveCount: liveRows.length,
@@ -462,7 +579,7 @@ export class Store {
      * throw happens before `writeEntries`, not inside the transaction that would roll the
      * row back but not the files.
      */
-    const delta = this.storyDelta(stories, meta);
+    const delta = this.storyDelta(stories, meta, parseAnchorManifest(entries));
     if (delta.concerns.length && !meta.allowStoryChanges) {
       throw new HttpError(
         409,
