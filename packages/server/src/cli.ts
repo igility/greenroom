@@ -228,6 +228,62 @@ if (command === 'serve') {
     // is wrong teaches nobody what normal looks like.
     if (json.delta) printDelta(json.delta, console.log);
   }
+} else if (command === 'anchors') {
+  /*
+   * Build the anchor manifest by rendering the build.
+   *
+   * Separate from `upload` on purpose: it needs a browser, takes real time, and a server
+   * deployment must never be asked to carry either. Run it after `build-storybook` and
+   * before `upload`, which then finds the manifest in the directory.
+   */
+  const { values, positionals } = parseArgs({
+    args: process.argv.slice(3),
+    allowPositionals: true,
+    options: {
+      concurrency: { type: 'string', default: '4' },
+      timeout: { type: 'string', default: '15000' },
+      json: { type: 'boolean', default: false },
+    },
+  });
+  const dir = positionals[0];
+  if (!dir) {
+    console.error('Usage: greenroom anchors <storybook-static-dir> [--concurrency N] [--timeout MS]');
+    process.exit(1);
+  }
+  const { scanAnchors, writeAnchorManifest } = await import('./anchors.js');
+  let lastShown = 0;
+  const result = await scanAnchors(dir, {
+    concurrency: Number(values.concurrency),
+    timeoutMs: Number(values.timeout),
+    onProgress: (done, total) => {
+      if (values.json) return;
+      if (done === total || done - lastShown >= 50) {
+        lastShown = done;
+        process.stderr.write(`\r  rendered ${done}/${total}`);
+      }
+    },
+  });
+  if (!values.json) process.stderr.write('\n');
+  const out = writeAnchorManifest(dir, result.manifest);
+  if (values.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(
+      `${result.totalAnchors} anchors across ${result.storiesWithAnchors} of ` +
+        `${result.storiesVisited} stories → ${out}`,
+    );
+    for (const [storyId, list] of Object.entries(result.manifest.anchors)) {
+      console.log(`  ${String(list.length).padStart(4)}  ${storyId}`);
+    }
+    if (result.failures.length) {
+      // Never silent. A story that failed to render contributes no anchors, which looks
+      // exactly like a story that has none — and that is the difference between a
+      // working deletion check and one that quietly passes everything.
+      console.log(`\n  ⚠ ${result.failures.length} story/stories failed to render and contributed nothing:`);
+      for (const f of result.failures.slice(0, 10)) console.log(`    ${f.storyId} — ${f.reason}`);
+      if (result.failures.length > 10) console.log(`    … and ${result.failures.length - 10} more`);
+    }
+  }
 } else if (command === 'link' || command === 'token' || command === 'reviewer' || command === 'scope') {
   /*
    * Admin commands, over HTTP rather than by opening the database.
@@ -460,7 +516,7 @@ The admin key defaults to GREENROOM_ADMIN_KEY.`;
   }
 } else {
   console.error(
-    `Unknown command: ${command}\nUsage: greenroom [serve|upload|link|token|reviewer|scope]`,
+    `Unknown command: ${command}\nUsage: greenroom [serve|upload|anchors|link|token|reviewer|scope]`,
   );
   process.exit(1);
 }
