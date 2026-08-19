@@ -40,3 +40,23 @@ export const SHEET_TAG = 'greenroom:sheet';
  * pre-existing rows meaningful after migration.
  */
 export const ROOT_REGION = '';
+
+/**
+ * Attribute a host puts on anything a comment should stay attached to across edits.
+ *
+ * Without it, a pin's selector is whatever `finder` could construct from the markup —
+ * and on a list of cards with no ids, classes or roles to grab, that is a positional
+ * path like `ol:nth-child(4) > li:nth-of-type(8) > .flex > div`. Reorder the list and
+ * that selector silently resolves to a DIFFERENT card. The comment is not lost; it is
+ * mis-pointed, which is worse, because "show me" scrolls to the wrong thing while the
+ * screenshot still shows the right one.
+ *
+ * The value only has to be stable and unique within the story. A slug of the thing's
+ * own identity is ideal — the question a decision card asks, the name of a token — since
+ * that survives reordering, restyling and re-statusing. It is NOT a story id, which is
+ * what `data-greenroom-story` is for: a tile declares "I am this story", an anchor
+ * declares "I am this thing, wherever I end up".
+ *
+ * Optional. A host that sets nothing keeps working exactly as before.
+ */
+export const ANCHOR_ATTR = 'data-greenroom-anchor';

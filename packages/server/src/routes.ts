@@ -337,6 +337,24 @@ export function registerRoutes(
   // Listing never returns whole tokens — see `listMagicLinks`. `reviewerId` narrows to
   // one person; `includeInactive` shows revoked and expired links, which is what you
   // want when answering "why did their link stop working".
+  /*
+   * Re-point a comment at a host-declared anchor.
+   *
+   * Admin only, and rightly: it rewrites where a client's comment claims to be about.
+   * The caller does the resolving, because the question can only be answered against a
+   * rendered page — resolve the stored selector, read the anchor off what it lands on,
+   * send the new selector here. The store keeps the original so a pass that lands on
+   * the wrong card is undoable without a restore.
+   */
+  app.post('/api/threads/:id/reanchor', requirePrincipal('admin'), async (c) => {
+    const input = await body(c, z.object({ selector: z.string().min(1).max(500) }));
+    return c.json({ thread: store.reanchorThread(c.req.param('id'), input.selector) });
+  });
+
+  app.post('/api/threads/:id/restore-anchor', requirePrincipal('admin'), (c) =>
+    c.json({ thread: store.restoreThreadAnchor(c.req.param('id')) }),
+  );
+
   app.get('/api/links', requirePrincipal('admin'), (c) =>
     c.json({
       links: store.listMagicLinks({

@@ -127,6 +127,16 @@ export interface Pin {
    * between "broken on mobile" and "the window happened to be narrow".
    */
   viewportLabel: string | null;
+  /**
+   * The selector this comment was originally pinned with, once a re-anchor pass has
+   * moved it onto a host-declared anchor. Null until that happens, and never
+   * overwritten by a later pass.
+   *
+   * Kept because the rewrite is a judgement made from a rendered page — resolve the old
+   * selector, read the anchor off whatever it lands on — and a pass that lands on the
+   * wrong card should be undoable with a column rather than a backup restore.
+   */
+  selectorOriginal?: string | null;
 }
 
 export interface Thread {

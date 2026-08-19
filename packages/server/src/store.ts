@@ -1033,6 +1033,52 @@ export class Store {
   }
 
   /**
+   * Re-point a comment at a host-declared anchor, keeping the way back.
+   *
+   * The rewrite itself is decided in a browser: the old selector is resolved against a
+   * rendered build and the anchor is read off whatever it lands on. That is the only
+   * place the question can be answered, and it is also why this stores the original — a
+   * pass that resolves a stale positional selector to the wrong card would otherwise
+   * cement the error with nothing to undo it.
+   *
+   * Idempotent, and deliberately one-way about the original: re-anchoring twice keeps
+   * the FIRST selector, because that is the one that was true when the reviewer pinned
+   * it. Overwriting it on a second pass would quietly lose the only record of where the
+   * comment actually started.
+   */
+  reanchorThread(threadId: string, selector: string): Thread {
+    const row = this.getThreadRow(threadId);
+    if (!row.selector) {
+      throw new HttpError(409, 'This comment has no pin, so there is nothing to re-anchor.', 'NO_PIN');
+    }
+    if (row.selector !== selector) {
+      this.db
+        .prepare(
+          `UPDATE threads
+              SET selector = ?,
+                  selector_original = COALESCE(selector_original, selector)
+            WHERE id = ?`,
+        )
+        .run(selector, threadId);
+    }
+    return rowToThread(this.getThreadRow(threadId));
+  }
+
+  /** Put a re-anchored comment back where it was pinned — the escape hatch for a pass
+   *  that resolved to the wrong element. */
+  restoreThreadAnchor(threadId: string): Thread {
+    const row = this.getThreadRow(threadId);
+    if (row.selector_original) {
+      this.db
+        .prepare(
+          'UPDATE threads SET selector = selector_original, selector_original = NULL WHERE id = ?',
+        )
+        .run(threadId);
+    }
+    return rowToThread(this.getThreadRow(threadId));
+  }
+
+  /**
    * Find a reviewer by the address they were invited at, case-insensitively.
    *
    * Only ever used to answer "may this address be sent a link it already had". It cannot
@@ -1515,6 +1561,7 @@ interface ThreadRow {
   y: number | null;
   viewport_w: number | null;
   viewport_label?: string | null;
+  selector_original?: string | null;
   viewport_h: number | null;
   args_json: string | null;
   screenshot_attachment_id: string | null;
@@ -1622,6 +1669,9 @@ const rowToThread = (r: ThreadRow): Thread => ({
           viewportWidth: r.viewport_w ?? 0,
           viewportHeight: r.viewport_h ?? 0,
           viewportLabel: r.viewport_label ?? null,
+          /** Where the comment was pinned before a re-anchor pass moved it. Null until
+           *  one does, and never overwritten by a later pass. */
+          selectorOriginal: r.selector_original ?? null,
         }
       : null,
   args: r.args_json ? (JSON.parse(r.args_json) as Record<string, unknown>) : null,

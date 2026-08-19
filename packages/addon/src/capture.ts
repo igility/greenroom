@@ -1,6 +1,6 @@
 import { finder } from '@medv/finder';
 import { domToPng } from 'modern-screenshot';
-import { TILE_SELECTOR, TILE_ATTR, type Pin } from '@igility/greenroom-shared';
+import { ANCHOR_ATTR, TILE_SELECTOR, TILE_ATTR, type Pin } from '@igility/greenroom-shared';
 import { STATUS_STYLE_ID } from './constants.js';
 
 export interface Capture {
@@ -21,6 +21,20 @@ export interface Capture {
    */
   portalCaptured: boolean;
 }
+
+/**
+ * What `finder` is allowed to build a selector out of.
+ *
+ * It accepts only role, name, aria-label, rel and href by default, so a list of cards
+ * carrying none of those falls back to a positional path — `ol:nth-child(4) >
+ * li:nth-of-type(8) > .flex > div`. That is correct exactly until the list is reordered,
+ * and then it resolves to a different card while the comment still claims to be about
+ * the first one.
+ *
+ * Letting the host's declared anchor in fixes that at the source: an anchor means the
+ * same thing next week, wherever the element has moved to.
+ */
+export const selectorOptions = { attr: (name: string) => name === ANCHOR_ATTR };
 
 let overlay: HTMLDivElement | null = null;
 let escListener: ((e: KeyboardEvent) => void) | null = null;
@@ -129,7 +143,10 @@ export function enterPinMode(onCapture: (c: Capture) => void, onCancel?: () => v
     let selector = 'body';
     if (el) {
       try {
-        selector = finder(el, { root: selectorRoot });
+        selector = finder(el, {
+          ...selectorOptions,
+          root: selectorRoot,
+        });
       } catch {
         selector = el.tagName.toLowerCase();
       }

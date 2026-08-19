@@ -397,6 +397,24 @@ export const MIGRATIONS: Migration[] = [
   `
   ALTER TABLE threads ADD COLUMN viewport_label TEXT;
   `,
+
+  /*
+   * v10 — keep the selector a comment was originally pinned with.
+   *
+   * Existing comments carry positional selectors, because the markup they were left on
+   * offered nothing else to grab. Those can be rewritten to a host's declared anchor
+   * (see ANCHOR_ATTR) once the host declares one — but the rewrite has to be performed
+   * against a rendered page, by resolving the old selector and reading the anchor off
+   * whatever it lands on. That is a judgement made from the DOM, and judgements made
+   * from the DOM can be wrong.
+   *
+   * So the original is kept. If a re-anchor pass points a comment at the wrong card,
+   * the way back is a column rather than a backup restore. Null means the comment has
+   * never been re-anchored, which is true of every row until one is.
+   */
+  `
+  ALTER TABLE threads ADD COLUMN selector_original TEXT;
+  `,
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the
