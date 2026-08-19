@@ -28,8 +28,10 @@ export function principalMiddleware(store: Store, config: Config): MiddlewareHan
       if (raw && sameSecret(raw, config.adminKey)) {
         principal = { kind: 'admin', id: 'env-admin', name: 'Admin' };
       } else {
-        const token = store.findToken(raw);
-        if (token) principal = { kind: token.kind, id: token.id, name: token.name };
+        // Use the principal as given. Rebuilding it from three fields dropped `role`,
+        // which is what gates approval — so a token acting as an approver would have
+        // silently lost the ability to approve.
+        principal = store.findToken(raw);
       }
     }
 

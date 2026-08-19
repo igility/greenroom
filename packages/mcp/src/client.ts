@@ -106,6 +106,10 @@ export class SidecarClient {
     });
   }
 
+  me(): Promise<{ principal: { kind: string; id: string; name: string; role?: string } }> {
+    return this.request('/api/me');
+  }
+
   setThreadState(
     threadId: string,
     state: ThreadState,

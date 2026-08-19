@@ -391,8 +391,17 @@ export function registerRoutes(
 
   // ── delegations + tokens (admin) ──────────────────────────────────────────
   app.post('/api/tokens', requirePrincipal('admin'), async (c) => {
-    const input = await body(c, z.object({ kind: z.enum(['admin', 'agent']), name: z.string().min(1) }));
-    return c.json(store.createToken(input.kind, input.name), 201);
+    const input = await body(
+      c,
+      z.object({
+        kind: z.enum(['admin', 'agent']),
+        name: z.string().min(1),
+        /** Bind the token to a reviewer, so it acts as that person rather than as an
+         *  agent. For the operator driving the MCP from their own session. */
+        reviewerId: z.string().optional(),
+      }),
+    );
+    return c.json(store.createToken(input.kind, input.name, input.reviewerId), 201);
   });
 
   app.post('/api/delegations', requirePrincipal('admin'), async (c) => {

@@ -415,6 +415,28 @@ export const MIGRATIONS: Migration[] = [
   `
   ALTER TABLE threads ADD COLUMN selector_original TEXT;
   `,
+
+  /*
+   * v11 — a token can act as a named reviewer.
+   *
+   * Tokens were `admin` or `agent`. An agent is deliberately restricted — it cannot
+   * approve without a recorded delegation and cannot resolve a thread at all — because
+   * an agent acting unsupervised should not be able to close a client's objection.
+   *
+   * That restriction assumes nobody is watching. When the operator drives the MCP from
+   * their own session, someone is: every action is proposed, shown and confirmed before
+   * it lands, which is the same arrangement as an assistant sending mail on their
+   * behalf. In that arrangement "Brad resolved this" is simply true, and forcing the
+   * record to say `agent` would make the audit LESS accurate, not more.
+   *
+   * So a token may name the reviewer it acts as. The principal it produces is that
+   * reviewer, with their role — approver or comment-only — which means the existing
+   * gates keep working unchanged: a token acting as a comment-only reviewer still
+   * cannot approve, because the check was always on the role rather than the kind.
+   */
+  `
+  ALTER TABLE tokens ADD COLUMN reviewer_id TEXT REFERENCES reviewers(id);
+  `,
 ];
 
 /** Schema version a freshly-opened database lands on. Derived, so tests assert the

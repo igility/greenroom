@@ -213,6 +213,88 @@ export function buildServer(client: SidecarClient): McpServer {
   );
 
   server.registerTool(
+    'whoami',
+    {
+      title: 'Who this connection acts as',
+      description:
+        'Report the identity every action you take will be recorded under. Worth checking ' +
+        'first: a token bound to a reviewer acts AS THAT PERSON, so replies are attributed ' +
+        'to them and resolutions are recorded as theirs. Call this before resolving ' +
+        'anything if you are unsure whose name is on it.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const { principal } = await client.me();
+        return textResult(
+          `Acting as ${principal.name} (${principal.kind}${principal.role ? `, ${principal.role}` : ''}). ` +
+            (principal.kind === 'reviewer'
+              ? 'Everything you do is recorded under this person\'s name, so confirm with them before each action that changes state.'
+              : 'Actions are recorded as an agent.'),
+        );
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'resolve_thread',
+    {
+      title: 'Resolve a feedback thread',
+      description:
+        'Close a thread because the reviewer\'s point has been settled — they answered ' +
+        'their own question, accepted a proposal, or the change they asked for has landed ' +
+        'and been confirmed.\n\n' +
+        '🔴 RESOLVING IS A JUDGEMENT ABOUT SOMEONE ELSE\'S OBJECTION, and on a connection ' +
+        'bound to a reviewer it is recorded under their name. The operator sitting in this ' +
+        'session is the review layer: show them the thread, say why you believe it is ' +
+        'settled, and get an explicit yes for each one. Never resolve a batch on a single ' +
+        'blanket approval, and never resolve because a thread looks stale or you are ' +
+        'unsure — leave it open and ask.\n\n' +
+        'Resolve only when the comment plainly needs no further action. If it contains a ' +
+        'new request, a condition ("...but I wonder if"), or anything you would have to ' +
+        'interpret, leave it and raise it instead. Marking work done is ' +
+        '`mark_thread_addressed`; that is different and does not close anything.\n\n' +
+        'Call without confirm to see what would be resolved.',
+      inputSchema: {
+        threadId: z.string().describe('Thread id from list_feedback.'),
+        note: z
+          .string()
+          .optional()
+          .describe('Optional reply posted before resolving, recording why it is settled.'),
+        confirm: z
+          .boolean()
+          .optional()
+          .describe('Must be true to actually resolve; omit to preview.'),
+      },
+    },
+    async ({ threadId, note, confirm }) => {
+      try {
+        const { feedback } = await client.getThread(threadId);
+        const who = await client.me().catch(() => null);
+        if (!confirm) {
+          const said = feedback.messages.map((m) => `  ${m.author.name}: ${m.body}`).join('\n');
+          return textResult(
+            `NOT resolved. This is what would be closed:\n\n` +
+              `  component: ${feedback.story.componentTitle || feedback.story.title}\n` +
+              `  state    : ${feedback.thread.state}\n\n${said}\n\n` +
+              `It would be recorded as resolved by ${who?.principal.name ?? 'this connection'}. ` +
+              `Show this to them and get an explicit yes before calling again with confirm:true.`,
+          );
+        }
+        if (note) await client.postMessage(threadId, note);
+        await client.setThreadState(threadId, 'resolved');
+        return textResult(
+          `Resolved ${threadId}, recorded as ${who?.principal.name ?? 'this connection'}.`,
+        );
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
     'list_stories',
     {
       title: 'List components and review states',

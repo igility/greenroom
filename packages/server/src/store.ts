@@ -1141,6 +1141,20 @@ export class Store {
     }
 
     this.db.transaction(() => {
+      /*
+       * Retire any token that acted as this person.
+       *
+       * Revoked AND unbound, in that order of importance. Revoking alone leaves a row
+       * pointing at a reviewer about to vanish, and the foreign key refuses the delete
+       * with nothing an operator can act on. Unbinding alone is worse: a token with no
+       * reviewer authenticates as an AGENT, so deleting a person would silently convert
+       * their token into one with different powers rather than stopping it.
+       */
+      this.db
+        .prepare(
+          "UPDATE tokens SET revoked_at = COALESCE(revoked_at, ?), reviewer_id = NULL WHERE reviewer_id = ?",
+        )
+        .run(nowIso(), reviewerId);
       this.db.prepare('DELETE FROM reviewer_progress WHERE reviewer_id = ?').run(reviewerId);
       this.db.prepare('DELETE FROM sessions WHERE reviewer_id = ?').run(reviewerId);
       this.db.prepare('DELETE FROM magic_links WHERE reviewer_id = ?').run(reviewerId);
@@ -1414,20 +1428,59 @@ export class Store {
 
   // ── tokens (admin/agent API keys) ─────────────────────────────────────────
 
-  createToken(kind: 'admin' | 'agent', name: string): { id: string; token: string } {
+  /**
+   * Mint a token. `reviewerId` makes it act as that person rather than as an agent —
+   * for the operator driving the MCP from their own session, where every action is
+   * proposed and confirmed before it lands.
+   */
+  createToken(
+    kind: 'admin' | 'agent',
+    name: string,
+    reviewerId?: string,
+  ): { id: string; token: string } {
+    if (reviewerId && !this.db.prepare('SELECT 1 FROM reviewers WHERE id = ?').get(reviewerId)) {
+      throw new HttpError(404, `Reviewer ${reviewerId} not found.`);
+    }
     const raw = `gr_${kind}_${secret(24)}`;
     const tokenId = id();
     this.db
-      .prepare('INSERT INTO tokens (id, token_hash, kind, name, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(tokenId, sha256Hex(raw), kind, name, nowIso());
+      .prepare(
+        'INSERT INTO tokens (id, token_hash, kind, name, created_at, reviewer_id) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(tokenId, sha256Hex(raw), kind, name, nowIso(), reviewerId ?? null);
     return { id: tokenId, token: raw };
   }
 
-  findToken(raw: string): { id: string; kind: 'admin' | 'agent'; name: string } | null {
+  /**
+   * Resolve a raw token to the principal it acts as.
+   *
+   * A token bound to a reviewer produces THAT reviewer — id, name and role — so every
+   * existing gate keeps working unchanged. The approval check was always on the role
+   * rather than the token kind, so a token acting as a comment-only reviewer still
+   * cannot sign anything off.
+   *
+   * A reviewer who has since been deleted yields nothing rather than falling back to an
+   * agent principal: a token naming somebody who no longer exists should stop working,
+   * not quietly become something with different powers.
+   */
+  findToken(raw: string): Principal | null {
     const row = this.db
       .prepare('SELECT * FROM tokens WHERE token_hash = ? AND revoked_at IS NULL')
       .get(sha256Hex(raw)) as TokenRow | undefined;
-    return row ? { id: row.id, kind: row.kind as 'admin' | 'agent', name: row.name } : null;
+    if (!row) return null;
+    if (row.reviewer_id) {
+      const reviewer = this.db
+        .prepare('SELECT * FROM reviewers WHERE id = ?')
+        .get(row.reviewer_id) as ReviewerRow | undefined;
+      if (!reviewer) return null;
+      return {
+        kind: 'reviewer',
+        id: reviewer.id,
+        name: reviewer.name,
+        role: reviewer.role as ReviewerRole,
+      };
+    }
+    return { kind: row.kind as 'admin' | 'agent', id: row.id, name: row.name };
   }
 
   // ── delegations ───────────────────────────────────────────────────────────
@@ -1616,6 +1669,7 @@ interface TokenRow {
   name: string;
   created_at: string;
   revoked_at: string | null;
+  reviewer_id?: string | null;
 }
 interface DelegationRow {
   id: string;
