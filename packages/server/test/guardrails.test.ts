@@ -297,26 +297,21 @@ describe('input guardrails', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('lets a browser cache build assets, but never a shared cache — and never the html', async () => {
-    const build = store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
+  it('lets a browser cache hashed assets, but never a shared cache — and never the html', async () => {
+    store.ingestBuildZip(zip('a'), { label: 'v1' }, adminP);
     // `private`, because these are a client's unreleased design system behind a login.
     // A shared cache holding them would serve them from an edge where the authorization
     // check no longer runs.
-    const asset = await app.request(`/builds/${build.build.id}/assets/app.js`, {
-      headers: asAdmin,
-    });
+    const asset = await app.request('/assets/app.js', { headers: asAdmin });
     expect(asset.status).toBe(200);
     const cc = asset.headers.get('cache-control') ?? '';
     expect(cc).toContain('private');
     expect(cc).not.toContain('public');
     expect(cc).toContain('immutable');
-    // The html is the one file that is NOT immutable: the stale-build banner is injected
-    // at serve time, so a cached copy suppresses the exact signal a returning reviewer
-    // needs. This test used to assert `immutable` on iframe.html, and that assertion was
-    // the bug — it happened to a real client.
-    const html = await app.request(`/builds/${build.build.id}/iframe.html`, {
-      headers: asAdmin,
-    });
+    // The html changes meaning on every upload — the root always serves newest, so a
+    // cached copy is a stale surface with no signal attached. A year-long cache on
+    // exactly this file once stranded a real client and then the operator.
+    const html = await app.request('/iframe.html', { headers: asAdmin });
     expect(html.headers.get('cache-control')).toBe('no-store');
   });
 });

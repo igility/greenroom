@@ -333,13 +333,20 @@ describe('review cycle end to end', () => {
     expect(out).not.toHaveProperty('reconfirmed');
   });
 
-  it('serves build static files to an authenticated principal', async () => {
-    const res = await app.request(`/builds/${buildA}/iframe.html`, {
+  it('serves the newest build at the root to an authenticated principal', async () => {
+    const res = await app.request('/iframe.html', {
       headers: { cookie: reviewerCookie },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
-    expect(await res.text()).toContain('build-a');
+    // buildB is newest at this point in the cycle — the root always serves newest.
+    expect(await res.text()).toContain('build-b');
+    // The old pinned address is not gone silently: it heals the visitor.
+    const pinned = await app.request(`/builds/${buildA}/iframe.html`, {
+      headers: { cookie: reviewerCookie },
+    });
+    expect(pinned.status).toBe(308);
+    expect(pinned.headers.get('location')).toBe('/iframe.html');
   });
 
   it('keeps identity endpoints off-limits without a session', async () => {

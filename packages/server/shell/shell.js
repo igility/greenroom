@@ -291,7 +291,7 @@ async function sweep() {
         }
       };
       window.addEventListener('message', onMsg);
-      hidden.src = `/builds/${state.build.id}/iframe.html?id=${encodeURIComponent(s.storyId)}&viewMode=story`;
+      hidden.src = `/iframe.html?id=${encodeURIComponent(s.storyId)}&viewMode=story`;
     });
     state.sweep.done++;
     render();
@@ -397,7 +397,7 @@ function render() {
   if (current) {
     regions.canvasEmpty.style.display = 'none';
     regions.frame.style.display = '';
-    const src = `/builds/${build.id}/iframe.html?id=${encodeURIComponent(current.storyId)}&viewMode=story`;
+    const src = `/iframe.html?id=${encodeURIComponent(current.storyId)}&viewMode=story`;
     if (regions.frame.getAttribute('src') !== src) regions.frame.setAttribute('src', src);
   } else {
     regions.canvasEmpty.style.display = '';

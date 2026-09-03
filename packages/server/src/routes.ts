@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { StoryKind } from '@igility/greenroom-shared';
 import type { Config } from './config.js';
 import type { Store } from './store.js';
-import { HttpError, withBuildMeta, withStaleBuildNotice } from './util.js';
+import { HttpError, withBuildMeta } from './util.js';
 import { requirePrincipal, principalOf, SESSION_COOKIE, type AppEnv } from './auth.js';
 import { createLinkRequestHandler } from './link-request.js';
 import { createMailer, type Mailer } from './mail.js';
@@ -147,77 +147,43 @@ export function registerRoutes(
     c.json({ count: store.fingerprintCount(c.req.param('id')) }),
   );
 
-  app.get('/builds/:id/*', requirePrincipal(), (c) => {
+  /*
+   * Pinned build URLs are gone from the product.
+   *
+   * They were correct for provenance and wrong as anything a person could end up
+   * holding: people bookmark where they are, and a bookmarked pinned URL strands its
+   * owner on one build forever. The banner that mitigated it is retired with the URLs —
+   * a permanent redirect heals every stale bookmark in the wild outright, which the
+   * banner could only advise.
+   *
+   * Provenance did not move into the URL bar and does not leave: every comment and
+   * approval still records the build it was made against, and the builds table keeps
+   * every artifact. Viewing an old build returns later as a UI feature, not an address.
+   */
+  app.get('/builds/:id/*', (c) => {
     const rel = c.req.path.replace(`/builds/${c.req.param('id')}/`, '');
-    const filePath = store.buildFilePath(c.req.param('id'), decodeURIComponent(rel));
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      throw new HttpError(404, 'Not found.');
-    }
-    const ext = filePath.split('.').pop() ?? '';
-    c.header('content-type', MIME[ext] ?? 'application/octet-stream');
-    const bytes = fs.readFileSync(filePath);
-
-    /*
-     * Tell a reviewer when they are looking at a build that has been superseded.
-     *
-     * A reviewer arrives through a magic link, which redirects to whatever build was
-     * latest at that moment — and from then on the build id is in the URL. Every click
-     * after that stays inside that build, a bookmark pins it forever, and refreshing
-     * cannot help, because the id is the address.
-     *
-     * 🔴 That fails in the worst direction. The reviewer sees a coherent, working
-     * Storybook and has no way to know it is stale, so they review superseded work
-     * believing it is current — and report problems that were fixed builds ago. It has
-     * already happened once, which is why this exists.
-     *
-     * The pinning itself is correct and stays: an approval binds to a specific build, and
-     * that is the whole point of the tool. What was missing was only the signal.
-     */
-    if (rel === 'index.html') {
-      const latest = store.latestBuild();
-      if (latest && latest.id !== c.req.param('id')) {
-        return c.body(new Uint8Array(withStaleBuildNotice(bytes, c.req.query('path'))));
-      }
-    }
-    return c.body(new Uint8Array(bytes));
+    const q = new URL(c.req.url).search;
+    return c.redirect(`/${rel}${q}`, 308);
   });
 
   /*
-   * The address a reviewer can live at.
+   * The reviewer's address is the root, and it names nothing.
    *
-   * `/builds/<id>/…` is correct for provenance — an approval binds to a build, and that
-   * id being the address is what makes a pinned URL mean something. It is WRONG as the
-   * thing in a reviewer's bar: people bookmark where they are, not where they entered,
-   * and a bookmark of a pinned address strands them on that build forever. That is not a
-   * user mistake; it is the natural move, and the design made it a trap. It caught the
-   * client.
+   * A link identifies and authenticates a person; the newest build is always what is
+   * served. No `/latest` segment, no build id — any version token in the address is a
+   * thing someone can bookmark and be stranded on, and both spellings of that mistake
+   * have now been made here (`/builds/<id>` stranded the client and the operator;
+   * `/latest` was the same idea wearing a safer name).
    *
-   * So `/latest/…` serves whatever build is newest, at an address that never changes.
-   * The reviewer's link redirects here, deep links keep their `?path=` and reopen the
-   * same story on the CURRENT build, and bookmarking anywhere under it is safe. The
-   * pinned `/builds/` URLs remain for what they are actually for.
-   *
-   * The served HTML carries the concrete build id in a meta tag, because the address no
-   * longer does — and the addon stamps comments and approvals with the build ON SCREEN,
-   * which it normally reads from the path. Without the tag, a tab left open across an
-   * upload would fall back to asking the server for "latest" and mis-stamp again: the
-   * exact bug the path-reading fixed, reintroduced by the path no longer carrying it.
+   * The served HTML still carries the concrete build id in a meta tag, because
+   * provenance must not depend on the address: the addon stamps comments and approvals
+   * with the build ON SCREEN, and without the tag a tab left open across an upload
+   * would ask the server for "latest" and mis-stamp — the bug the path used to guard.
    */
-  app.get('/latest/*', requirePrincipal(), (c) => {
-    const build = store.latestBuild();
-    if (!build) throw new HttpError(404, 'No builds uploaded yet.');
-    const rel = decodeURIComponent(c.req.path.replace('/latest/', '')) || 'index.html';
-    const filePath = store.buildFilePath(build.id, rel);
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      throw new HttpError(404, 'Not found.');
-    }
-    const ext = filePath.split('.').pop() ?? '';
-    c.header('content-type', MIME[ext] ?? 'application/octet-stream');
-    const bytes = fs.readFileSync(filePath);
-    if (rel.endsWith('.html')) {
-      return c.body(new Uint8Array(withBuildMeta(bytes, build.id)));
-    }
-    return c.body(new Uint8Array(bytes));
+  app.get('/latest/*', (c) => {
+    const rel = c.req.path.replace('/latest/', '');
+    const q = new URL(c.req.url).search;
+    return c.redirect(`/${rel}${q}`, 308);
   });
 
   // ── stories + status ──────────────────────────────────────────────────────
@@ -561,8 +527,51 @@ export function registerRoutes(
     const wantsShell = c.req.query('surface') === 'shell';
     const build = store.latestBuild();
     if (wantsShell || !build) return c.redirect('/review/');
-    // The stable address, not the pinned one. What lands in the reviewer's bar is what
-    // they will bookmark, and only /latest/ is safe to keep.
-    return c.redirect('/latest/index.html');
+    // The bare root. The address identifies nothing but the service; what it serves is
+    // always the newest build, and anything the reviewer bookmarks stays current.
+    return c.redirect('/');
   });
+
+  /*
+   * Registered last on purpose: everything else — /api, /review, the redirects — must
+   * win before the root fallback serves build files.
+   */
+  app.get('*', (c) => {
+    const rel = decodeURIComponent(c.req.path.replace(/^\//, '')) || 'index.html';
+    const wantsPage = rel === 'index.html' || rel.endsWith('.html');
+    const principal = c.get('principal');
+    if (!principal) {
+      // A person, not a client: send them to the gate rather than a JSON 401. Assets
+      // keep the hard 401 — a page that half-loads unauthenticated is worse than one
+      // that does not load.
+      if (wantsPage) return c.redirect('/review/');
+      throw new HttpError(401, 'Authentication required.');
+    }
+    const build = store.latestBuild();
+    if (!build) throw new HttpError(404, 'No builds uploaded yet.');
+    const filePath = store.buildFilePath(build.id, rel);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      throw new HttpError(404, 'Not found.');
+    }
+    const ext = filePath.split('.').pop() ?? '';
+    c.header('content-type', MIME[ext] ?? 'application/octet-stream');
+    /*
+     * What may be kept: only `/assets/*`, whose filenames carry a content hash — the
+     * same path is the same bytes in every build. Everything else at the root changes
+     * meaning on upload (index.html, index.json, and the UNHASHED sb-addons and
+     * sb-manager bundles), so a cached copy is a stale surface with no signal attached.
+     */
+    if (rel.startsWith('assets/')) {
+      c.header('cache-control', 'private, max-age=31536000, immutable');
+    } else {
+      c.header('cache-control', 'no-store');
+    }
+    c.header('vary', 'Authorization, Cookie');
+    const bytes = fs.readFileSync(filePath);
+    if (rel.endsWith('.html')) {
+      return c.body(new Uint8Array(withBuildMeta(bytes, build.id)));
+    }
+    return c.body(new Uint8Array(bytes));
+  });
+
 }
