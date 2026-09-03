@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { StoryKind } from '@igility/greenroom-shared';
 import type { Config } from './config.js';
 import type { Store } from './store.js';
-import { HttpError, withStaleBuildNotice } from './util.js';
+import { HttpError, withBuildMeta, withStaleBuildNotice } from './util.js';
 import { requirePrincipal, principalOf, SESSION_COOKIE, type AppEnv } from './auth.js';
 import { createLinkRequestHandler } from './link-request.js';
 import { createMailer, type Mailer } from './mail.js';
@@ -176,8 +176,46 @@ export function registerRoutes(
     if (rel === 'index.html') {
       const latest = store.latestBuild();
       if (latest && latest.id !== c.req.param('id')) {
-        return c.body(new Uint8Array(withStaleBuildNotice(bytes, latest.id, c.req.query('path'))));
+        return c.body(new Uint8Array(withStaleBuildNotice(bytes, c.req.query('path'))));
       }
+    }
+    return c.body(new Uint8Array(bytes));
+  });
+
+  /*
+   * The address a reviewer can live at.
+   *
+   * `/builds/<id>/…` is correct for provenance — an approval binds to a build, and that
+   * id being the address is what makes a pinned URL mean something. It is WRONG as the
+   * thing in a reviewer's bar: people bookmark where they are, not where they entered,
+   * and a bookmark of a pinned address strands them on that build forever. That is not a
+   * user mistake; it is the natural move, and the design made it a trap. It caught the
+   * client.
+   *
+   * So `/latest/…` serves whatever build is newest, at an address that never changes.
+   * The reviewer's link redirects here, deep links keep their `?path=` and reopen the
+   * same story on the CURRENT build, and bookmarking anywhere under it is safe. The
+   * pinned `/builds/` URLs remain for what they are actually for.
+   *
+   * The served HTML carries the concrete build id in a meta tag, because the address no
+   * longer does — and the addon stamps comments and approvals with the build ON SCREEN,
+   * which it normally reads from the path. Without the tag, a tab left open across an
+   * upload would fall back to asking the server for "latest" and mis-stamp again: the
+   * exact bug the path-reading fixed, reintroduced by the path no longer carrying it.
+   */
+  app.get('/latest/*', requirePrincipal(), (c) => {
+    const build = store.latestBuild();
+    if (!build) throw new HttpError(404, 'No builds uploaded yet.');
+    const rel = decodeURIComponent(c.req.path.replace('/latest/', '')) || 'index.html';
+    const filePath = store.buildFilePath(build.id, rel);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      throw new HttpError(404, 'Not found.');
+    }
+    const ext = filePath.split('.').pop() ?? '';
+    c.header('content-type', MIME[ext] ?? 'application/octet-stream');
+    const bytes = fs.readFileSync(filePath);
+    if (rel.endsWith('.html')) {
+      return c.body(new Uint8Array(withBuildMeta(bytes, build.id)));
     }
     return c.body(new Uint8Array(bytes));
   });
@@ -523,6 +561,8 @@ export function registerRoutes(
     const wantsShell = c.req.query('surface') === 'shell';
     const build = store.latestBuild();
     if (wantsShell || !build) return c.redirect('/review/');
-    return c.redirect(`/builds/${build.id}/index.html`);
+    // The stable address, not the pinned one. What lands in the reviewer's bar is what
+    // they will bookmark, and only /latest/ is safe to keep.
+    return c.redirect('/latest/index.html');
   });
 }

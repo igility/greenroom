@@ -174,6 +174,16 @@ export class Sidecar {
       typeof window === 'undefined' ? '' : window.location.pathname,
     );
     if (fromPath) return fromPath;
+    // Under the stable /latest/ address the path deliberately carries no id, so the
+    // sidecar stamps it into the served document instead. Same authority, different
+    // carrier: both say which build is ON SCREEN, which asking the server does not —
+    // "latest" can have moved on under a tab that has not reloaded.
+    const fromMeta =
+      typeof document === 'undefined'
+        ? null
+        : (document.querySelector('meta[name="greenroom-build"]')?.getAttribute('content') ??
+          null);
+    if (fromMeta) return fromMeta;
     return (await this.latestBuild()).build?.id ?? null;
   }
   setStatus(storyId: string, to: StoryState, buildId?: string, note?: string) {

@@ -28,12 +28,30 @@ const escapeHtml = (s: string) =>
  * reader will have moved on since. The script only improves the href — with scripting
  * blocked the anchor still works, just aimed at wherever they came in.
  */
-export function withStaleBuildNotice(
-  html: Uint8Array,
-  latestBuildId: string,
-  path?: string,
-): Uint8Array {
-  const base = `/builds/${encodeURIComponent(latestBuildId)}/index.html`;
+
+/**
+ * Stamp the served HTML with the build it came from, for pages whose ADDRESS no longer
+ * says. Under `/latest/` the path is stable by design, so the id has to travel in the
+ * document instead — the addon reads it to stamp comments and approvals with the build
+ * on screen rather than asking the server, which can have moved on under an open tab.
+ */
+export function withBuildMeta(html: Uint8Array, buildId: string): Uint8Array {
+  // Not escaping — constraining. A build id is a UUID this service minted; anything
+  // outside id characters is not a build id and has no business in the tag at all.
+  const safe = buildId.replace(/[^A-Za-z0-9-]/g, '');
+  const tag = `<meta name="greenroom-build" content="${safe}">`;
+  const text = Buffer.from(html).toString('utf8');
+  const out = text.includes('<head>')
+    ? text.replace('<head>', `<head>${tag}`)
+    : tag + text;
+  return Buffer.from(out, 'utf8');
+}
+
+export function withStaleBuildNotice(html: Uint8Array, path?: string): Uint8Array {
+  // The stable address, not the newest pinned one — otherwise following the banner
+  // hands the reviewer a fresh URL that will itself go stale, and the next bookmark
+  // recreates the trap the banner exists to escape.
+  const base = `/latest/index.html`;
   const href = path ? `${base}?path=${encodeURIComponent(path)}` : base;
 
   const bar = `

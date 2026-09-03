@@ -103,7 +103,28 @@ export function createApp(store: Store, config: Config, mailer: Mailer = createM
    */
   app.use('/builds/*', async (c, next) => {
     await next();
-    c.header('cache-control', 'private, max-age=31536000, immutable');
+    /*
+     * 🔴 Except the HTML. A build's assets are immutable; its index.html is not — the
+     * stale-build banner is injected into it AT SERVE TIME depending on whether a newer
+     * build exists. Caching it for a year meant a reviewer who bookmarked a build's URL
+     * got the cached copy on every return visit and the banner never reached them: they
+     * sat on an old build with the one signal that would have told them suppressed by
+     * this header. Found because it happened to the client.
+     */
+    if (c.req.path.endsWith('.html')) {
+      c.header('cache-control', 'no-store');
+    } else {
+      c.header('cache-control', 'private, max-age=31536000, immutable');
+    }
+    c.header('vary', 'Authorization, Cookie');
+  });
+
+  /** The stable address (see /latest/* in routes.ts): what it serves changes on every
+   *  upload, so nothing under it may be kept. Assets are refetched under their hashed
+   *  names, which dedupe against the browser's cache of /builds anyway. */
+  app.use('/latest/*', async (c, next) => {
+    await next();
+    c.header('cache-control', 'no-store');
     c.header('vary', 'Authorization, Cookie');
   });
 

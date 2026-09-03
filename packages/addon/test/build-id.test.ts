@@ -79,6 +79,31 @@ describe('which build a submission is stamped with', () => {
     expect(calls()).toBe(0);
   });
 
+  it('reads the meta tag when the path carries no id — the stable /latest/ address', async () => {
+    // /latest/ is stable by design, so the id travels in the document. The server must
+    // not be consulted: "latest" can have moved on under a tab that has not reloaded,
+    // which is the same mis-stamp the path-reading fixed.
+    const { fetchSpy, calls } = sidecarThatCounts();
+    vi.stubGlobal('fetch', fetchSpy);
+    withPath('/latest/index.html');
+    document.head.innerHTML = '<meta name="greenroom-build" content="BUILD-ON-SCREEN">';
+    const client = new Sidecar({ url: 'https://design.example.com', token: 't' });
+    expect(await client.currentBuildId()).toBe('BUILD-ON-SCREEN');
+    expect(calls()).toBe(0);
+    document.head.innerHTML = '';
+  });
+
+  it('path beats meta when both are present', async () => {
+    // A pinned /builds/ URL is the stronger statement of what is on screen; a stray
+    // meta tag must not override it.
+    vi.stubGlobal('fetch', sidecarThatCounts().fetchSpy);
+    withPath('/builds/PINNED/index.html');
+    document.head.innerHTML = '<meta name="greenroom-build" content="OTHER">';
+    const client = new Sidecar({ url: 'https://design.example.com', token: 't' });
+    expect(await client.currentBuildId()).toBe('PINNED');
+    document.head.innerHTML = '';
+  });
+
   it('falls back to latest only when the path carries no build — local dev', async () => {
     const { fetchSpy, calls } = sidecarThatCounts();
     vi.stubGlobal('fetch', fetchSpy);
