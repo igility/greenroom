@@ -43,11 +43,11 @@ export interface Conn {
 }
 
 /**
- * Reads the build id out of a sidecar path. Builds are served under `/builds/<id>/`, so
- * the id of the render on screen is already in the URL and needs no round trip.
+ * Reads a build id out of a legacy pinned path (`/builds/<id>/`).
  *
- * Returns null for anything else — notably local Storybook at `localhost:6006`, which has
- * no build in its path because nothing has been uploaded.
+ * Those addresses are retired — the sidecar redirects them to the root, which names no
+ * build — so this now only matches a page loaded before that shipped. The live carrier is
+ * the `greenroom-build` meta tag; see `currentBuildId`.
  */
 export function buildIdFromPath(pathname: string): string | null {
   const m = /^\/builds\/([^/]+)\//.exec(pathname);
@@ -174,10 +174,10 @@ export class Sidecar {
       typeof window === 'undefined' ? '' : window.location.pathname,
     );
     if (fromPath) return fromPath;
-    // Under the stable /latest/ address the path deliberately carries no id, so the
-    // sidecar stamps it into the served document instead. Same authority, different
-    // carrier: both say which build is ON SCREEN, which asking the server does not —
-    // "latest" can have moved on under a tab that has not reloaded.
+    // The reviewer's address names no build at all, so the sidecar stamps it into the
+    // served document instead. Same authority, different carrier: both say which build
+    // is ON SCREEN, which asking the server does not — the newest can have moved on
+    // under a tab that has not reloaded.
     const fromMeta =
       typeof document === 'undefined'
         ? null

@@ -1,6 +1,6 @@
 {
   "name": "@igility/greenroom-addon",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Greenroom Storybook addon: Review panel + pin-drop overlay",
   "license": "MIT",
   "homepage": "https://github.com/igility/greenroom#readme",

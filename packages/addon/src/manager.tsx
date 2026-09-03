@@ -192,19 +192,35 @@ function loadConn(): Conn | null {
 }
 
 /**
- * A build hosted by the sidecar is served from `/builds/<id>/`, which means this
- * Storybook and the review store are the same origin and the reviewer's session
- * cookie already authenticates. Detect that and connect without asking.
+ * A build hosted by the sidecar is the same origin as the review store, so the
+ * reviewer's session cookie already authenticates. Detect that and connect without
+ * asking.
  *
  * This is what lets a client follow one magic link and land in the host's own
  * Storybook — its branding, its navigation, its curation — with review live and
  * nothing to configure. Handing a client a URL and an API token was never going to
  * happen. Anywhere else (a developer running `storybook dev`), the form still
  * appears and a token is still required.
+ *
+ * 🔴 DETECTED FROM THE BUILD STAMP, NOT THE PATH. This used to test for
+ * `/builds/<id>/`, and when the reviewer's address became the bare root — no build
+ * id, no `/latest`, nothing but `/` — the test stopped matching and every hosted
+ * reviewer was shown a connect form asking for a sidecar URL and an API token. The
+ * panel was the one place still reading identity out of the URL, so de-versioning
+ * the address broke it.
+ *
+ * The stamp is the right signal precisely because it does not live in the address:
+ * the sidecar injects `<meta name="greenroom-build">` into every page it serves, and
+ * only pages it serves. A `storybook dev` on :6006 has no stamp and still gets the
+ * form.
  */
-function hostedConn(): Conn | null {
-  if (typeof location === 'undefined') return null;
-  return /^\/builds\/[^/]+\//.test(location.pathname) ? { url: location.origin } : null;
+export function hostedConn(): Conn | null {
+  if (typeof location === 'undefined' || typeof document === 'undefined') return null;
+  const stamped = !!document.querySelector('meta[name="greenroom-build"]');
+  // The pinned form still redirects rather than serving, but a page in a tab that
+  // loaded before the redirect shipped is still a hosted page; keep accepting it.
+  const pinned = /^\/(builds\/[^/]+|latest)\//.test(location.pathname);
+  return stamped || pinned ? { url: location.origin } : null;
 }
 
 const ConnectForm: React.FC<{ defaultUrl: string; onConnect: (c: Conn) => void }> = ({

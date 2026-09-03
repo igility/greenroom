@@ -114,3 +114,47 @@ describe('which build a submission is stamped with', () => {
     expect(calls()).toBe(1);
   });
 });
+
+describe('deciding whether the sidecar is hosting this Storybook', () => {
+  /**
+   * The panel used to detect hosting by matching `/builds/<id>/` in the path. When the
+   * reviewer's address became the bare root, that stopped matching and every hosted
+   * reviewer was shown a connect form asking for a URL and an API token — the one thing
+   * the hosted flow exists to avoid. The build stamp is the right signal because it does
+   * not live in the address.
+   */
+  const withDom = (pathname: string, stamped: boolean) => {
+    Object.defineProperty(window, 'location', {
+      value: { pathname, origin: 'https://design.example.com' },
+      writable: true,
+      configurable: true,
+    });
+    document.head.innerHTML = stamped
+      ? '<meta name="greenroom-build" content="b1">'
+      : '';
+  };
+
+  it('connects silently on a stamped page at the bare root', async () => {
+    withDom('/index.html', true);
+    const { hostedConn } = await import('../src/manager.tsx');
+    expect(hostedConn()).toEqual({ url: 'https://design.example.com' });
+  });
+
+  it('connects on the root path itself', async () => {
+    withDom('/', true);
+    const { hostedConn } = await import('../src/manager.tsx');
+    expect(hostedConn()).toEqual({ url: 'https://design.example.com' });
+  });
+
+  it('still connects on a legacy pinned page loaded before the redirect shipped', async () => {
+    withDom('/builds/abc-123/index.html', false);
+    const { hostedConn } = await import('../src/manager.tsx');
+    expect(hostedConn()).not.toBeNull();
+  });
+
+  it('shows the form for a developer running storybook dev — no stamp, no hosting', async () => {
+    withDom('/', false);
+    const { hostedConn } = await import('../src/manager.tsx');
+    expect(hostedConn()).toBeNull();
+  });
+});
